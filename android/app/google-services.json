@@ -1,0 +1,62 @@
+{
+  "project_info": {
+    "project_number": "322996576044",
+    "project_id": "souga-5fdb3",
+    "storage_bucket": "souga-5fdb3.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:322996576044:android:62b42471e0e9e401e1d689",
+        "android_client_info": {
+          "package_name": "com.souga.souga"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "322996576044-h8oqbrb78eavdfkmuhia754ju56jhpd8.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.souga.souga",
+            "certificate_hash": "b54c6128366e66d6c29795ae216f2079e304ec08"
+          }
+        },
+        {
+          "client_id": "322996576044-imvil7552kjli6n7o9s2b3te29s9e302.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.souga.souga",
+            "certificate_hash": "52996cbfcac761f7be49af3f54aace96e98d6c72"
+          }
+        },
+        {
+          "client_id": "322996576044-df4ocp4i1s9h9bfiklg5lt065m72terl.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB1_o_b54dLTm6j6_M7v3bwbbMhN7EjB0k"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "322996576044-df4ocp4i1s9h9bfiklg5lt065m72terl.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "322996576044-cs0m142ivmvlsfetj37cv2aevk8c2ajp.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.souga.souga"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

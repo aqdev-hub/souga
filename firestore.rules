@@ -1,0 +1,188 @@
+rules_version = '2';
+// ════════════════════════════════════════════════════════════════════════
+//  Souga — Firestore Security Rules (v2 — Ownership + Role Based)
+// ════════════════════════════════════════════════════════════════════════
+//  ✅ الفرق الجوهري عن النسخة السابقة:
+//   - لا يوجد أي "allow read, write: if request.auth != null" عام بعد الآن.
+//   - كل مجموعة لها قواعد قراءة/كتابة مبنية على الملكية (uid) أو الدور.
+//   - الدور (admin) لا يُقرأ من حقل قابل للتعديل الذاتي، بل من
+//     Firebase Custom Claims (request.auth.token.admin == true) التي لا
+//     يمكن للمستخدم تغييرها من جهازه — تُضبط فقط من خادم موثوق
+//     (راجع POST /set-user-role في index.js الذي يتحقق من صلاحية الأدمن
+//     قبل ضبط الـ Claim عبر Firebase Admin SDK).
+//   - حقل role داخل مستند users/{uid} أصبح "للعرض فقط" (read-only من جهة
+//     العميل بعد الإنشاء) ولا يُعتمَد عليه أمنياً بعد الآن.
+// ════════════════════════════════════════════════════════════════════════
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── دوال مساعدة ─────────────────────────────────────────────────────
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(uid) {
+      return isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ✅ الأدمن يُحدَّد فقط عبر Custom Claim (لا يمكن انتحاله من العميل)
+    function isAdmin() {
+      return isSignedIn() && request.auth.token.admin == true;
+    }
+
+    function isSeller() {
+      return isSignedIn() && request.auth.token.seller == true;
+    }
+
+    // ✅ جديد — يسمح لأي مستخدم مسجَّل دخول بتحديث rating/reviewCount فقط
+    // على مستند منتج لا يملكه (وليس أي حقل آخر مثل السعر أو المخزون).
+    // ضروري لأن reviews_service.dart._recalculateProductRating() يُنفَّذ
+    // من جهاز العميل الذي يكتب تقييماً (وهو ليس بائع المنتج بالضرورة)
+    // فور إضافة/تعديل/حذف تقييمه — بدون هذا الاستثناء الضيّق سيفشل حفظ
+    // كل تقييم بخطأ صلاحيات رغم أن كتابة مستند المراجعة نفسه مسموحة.
+    function onlyUpdatingRatingFields() {
+      return request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['rating', 'reviewCount']);
+    }
+
+    function notChangingRoleFields() {
+      // يمنع المستخدم العادي من تعديل role/isActive في مستنده الخاص
+      return !('role' in request.resource.data.diff(resource.data).affectedKeys())
+          && !('isActive' in request.resource.data.diff(resource.data).affectedKeys());
+    }
+
+    // ── users/{uid} ──────────────────────────────────────────────────────
+    match /users/{uid} {
+      allow read: if isSignedIn();
+      allow create: if isOwner(uid);
+      // المستخدم يمكنه تعديل بياناته الخاصة (الاسم، الصورة، المتجر...)
+      // لكن ممنوع عليه تغيير role أو isActive بنفسه — فقط الأدمن يقدر.
+      allow update: if (isOwner(uid) && notChangingRoleFields()) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ── products/{id} ───────────────────────────────────────────────────
+    match /products/{productId} {
+      allow read: if true; // كتالوج عام — القراءة مفتوحة للجميع (SEO/ويب)
+      // ✅ الأدمن مستثنى من شرط تطابق sellerId مع uid الخاص به — ضروري
+      // لأداة "البيانات التجريبية" (seed_data_screen.dart) التي تُنشئ
+      // منتجات بمعرّف بائع تجريبي ثابت (demo_seller_001) لا يساوي uid
+      // الأدمن الفعلي، ويبقى مفيداً أيضاً لو احتاج الأدمن إنشاء/تصحيح
+      // منتج نيابة عن بائع مستقبلاً.
+      allow create: if isSignedIn()
+                    && (request.resource.data.sellerId == request.auth.uid || isAdmin());
+      allow update: if isSignedIn()
+                    && (resource.data.sellerId == request.auth.uid
+                        || isAdmin()
+                        || onlyUpdatingRatingFields());
+      allow delete: if isSignedIn()
+                    && (resource.data.sellerId == request.auth.uid || isAdmin());
+
+      // ── products/{id}/variants/{variantId} — Universal Product Engine ──
+      // ✅ نفس منطق ملكية المنتج الأب نفسه: فقط بائع المنتج أو الأدمن
+      // يستطيع كتابة/تعديل/حذف تركيبات SKU الخاصة به. القراءة عامة (تلزم
+      // شاشة تفاصيل المنتج لعرض السعر/المخزون الصحيح لكل تركيبة).
+      match /variants/{variantId} {
+        allow read: if true;
+        allow write: if isSignedIn() && (
+          get(/databases/$(database)/documents/products/$(productId)).data.sellerId == request.auth.uid
+          || isAdmin()
+        );
+      }
+    }
+
+    // ── categories/{id} — Universal Product Engine ──────────────────────
+    // شجرة الفئات: قراءة عامة (تلزم لعرض الفئات لأي زائر/زاحف بحث)،
+    // والكتابة للأدمن فقط (شجرة الفئات إعداد نظامي وليس بيانات بائع).
+    match /categories/{categoryId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── attribute_definitions/{id} — Universal Product Engine ───────────
+    match /attribute_definitions/{attributeId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── orders/{id} ──────────────────────────────────────────────────────
+    match /orders/{orderId} {
+      allow read: if isSignedIn() && (
+                     resource.data.customerId == request.auth.uid ||
+                     resource.data.sellerId   == request.auth.uid ||
+                     isAdmin());
+      allow create: if isSignedIn()
+                    && request.resource.data.customerId == request.auth.uid;
+      // العميل يستطيع فقط "إلغاء" طلبه، والبائع/الأدمن يستطيعون تحديث الحالة
+      allow update: if isSignedIn() && (
+                       resource.data.sellerId == request.auth.uid ||
+                       isAdmin() ||
+                       (resource.data.customerId == request.auth.uid &&
+                        request.resource.data.status == 'cancelled'));
+      allow delete: if isAdmin();
+    }
+
+    // ── reviews/{id} ─────────────────────────────────────────────────────
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isSignedIn()
+                    && request.resource.data.userId == request.auth.uid;
+      allow update, delete: if isSignedIn()
+                    && (resource.data.userId == request.auth.uid || isAdmin());
+    }
+
+    // ── favorites/{uid}__{productId} ────────────────────────────────────
+    // ✅ إصلاح: request.resource غير متوفّر إطلاقاً أثناء عملية delete في
+    // Firestore Rules (متاح فقط لـ create/update) — كانت هذه القاعدة قبل
+    // الإصلاح تمنع كل عمليات الحذف فعلياً وتكسر ميزة "إزالة من المفضلة".
+    // الحذف الآن يتحقق من resource.data (المستند القائم) وليس request.resource.
+    match /favorites/{docId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+    match /likes/{docId} {
+      allow read: if true;
+      allow create: if isSignedIn() && request.resource.data.userId == request.auth.uid;
+      allow delete: if isSignedIn() && resource.data.userId == request.auth.uid;
+    }
+
+    // ── notifications/{id} ───────────────────────────────────────────────
+    match /notifications/{notifId} {
+      allow read, update, delete: if isSignedIn()
+                    && resource.data.userId == request.auth.uid;
+      // الإنشاء يتم فقط من الخادم (Admin SDK) أو من مستخدم يرسل إشعاراً
+      // لطرف آخر ضمن سياق عملية شرعية (طلب جديد/تحديث حالة)
+      allow create: if isSignedIn();
+    }
+
+    // ── chat_rooms/{roomId} + messages ──────────────────────────────────
+    match /chat_rooms/{roomId} {
+      allow read, update: if isSignedIn()
+                    && request.auth.uid in resource.data.participants;
+      allow create: if isSignedIn()
+                    && request.auth.uid in request.resource.data.participants;
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn()
+                    && request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(roomId)).data.participants;
+        allow create: if isSignedIn()
+                    && request.resource.data.senderId == request.auth.uid
+                    && request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(roomId)).data.participants;
+        allow update: if isSignedIn()
+                    && request.auth.uid in get(/databases/$(database)/documents/chat_rooms/$(roomId)).data.participants;
+      }
+    }
+
+    // ── app_config/{doc} — إعدادات التحديث، للقراءة العامة فقط ──────────
+    match /app_config/{doc} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // ── أي مجموعة أخرى غير مُعرَّفة صراحة: مرفوضة افتراضياً (Deny by default) ──
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

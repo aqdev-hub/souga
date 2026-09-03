@@ -32,12 +32,16 @@ class ProductDetailScreen extends StatefulWidget {
 }
 
 class _ProductDetailScreenState extends State<ProductDetailScreen> {
-  int _imgIndex = 0;
+  // ✅ محرك المعرض الجديد — يحل محل _imgIndex اليدوي القديم بالكامل.
+  // يعمل تلقائياً مع أي منتج (قديم بصورة واحدة، أو جديد بفيديو/متغيرات)
+  // عبر product.effectiveGallery المبني في ProductModel نفسه.
+  late final ProductGalleryController _galleryController;
   int _qty = 1;
 
   @override
   void initState() {
     super.initState();
+    _galleryController = ProductGalleryController(product: widget.product);
     // ✅ منتج بلا أي تقييمات → توليد 10 تقييمات تمهيدية ذكية في الخلفية.
     // صامت تماماً من منظور المستخدم؛ الخادم يضمن عدم التكرار حتى لو فتح
     // عدة مستخدمين نفس المنتج في نفس اللحظة تقريباً، وتغطي هذه الخطوة
@@ -45,6 +49,12 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     if (widget.product.reviewCount == 0) {
       unawaited(AiAssistantService.generateSeedReviews(productId: widget.product.id));
     }
+  }
+
+  @override
+  void dispose() {
+    _galleryController.dispose();
+    super.dispose();
   }
 
   void _requireLogin() {
@@ -191,55 +201,49 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             ),
           ],
           flexibleSpace: FlexibleSpaceBar(
-            background: Stack(children: [
-              widget.product.images.isEmpty
-                  ? Container(color: colors.border,
-                      child: Center(child: Icon(Icons.image_outlined, size: 80, color: colors.textHint)))
-                  : GestureDetector(
-                      // ✅ النقر على صورة المنتج يفتح رابط المنتج في المتصفح
-                      onLongPress: () {
-                        // رابط المنتج الثابت
-                        final url = 'https://souga-5fdb3.web.app/product/'
-                            '${widget.product.id}';
-                        launchUrl(Uri.parse(url),
-                            mode: LaunchMode.externalApplication);
-                      },
-                      child: PageView.builder(
-                      itemCount: widget.product.images.length,
-                      onPageChanged: (i) => setState(() => _imgIndex = i),
-                      itemBuilder: (_, i) => GestureDetector(
-                        onTap: () async {
-                          final url = Uri.parse(
-                              'https://souga-5fdb3.web.app/product/${widget.product.id}');
-                          if (await canLaunchUrl(url)) {
-                            await launchUrl(url, mode: LaunchMode.externalApplication);
-                          }
-                        },
-                        child: CachedNetworkImage(
-                          imageUrl: ImageKitService.productFullUrl(widget.product.images[i]),
-                          fit: BoxFit.cover,
-                          placeholder: (_, __) => Container(color: colors.border),
-                          errorWidget: (_, __, ___) => Container(color: colors.border,
-                              child: Icon(Icons.image_outlined, size: 60, color: colors.textHint)),
-                        ),
+            // ✅ محرك المعرض الجديد بالكامل — يحل محل PageView اليدوي و
+            // _imgIndex. يعمل تلقائياً مع صورة واحدة (منتج قديم)، أو
+            // فيديو+صور+ألوان+مقاسات (منتج جديد) دون أي فرع خاص هنا.
+            background: GestureDetector(
+              // ✅ أُبقيت خاصية "فتح رابط المنتج بالمتصفح" بالضغط المطوّل
+              // كما كانت (مفيدة لمشاركة/نسخ الرابط). أزلت النقر العادي
+              // القديم لفتح المتصفح لأنه كان يتعارض الآن مع نقرة تشغيل/
+              // إيقاف الفيديو داخل المعرض الجديد، ولم يكن ضرورياً أصلاً
+              // (المستخدم بالفعل داخل صفحة المنتج في التطبيق).
+              onLongPress: () {
+                final url = 'https://souga-5fdb3.web.app/product/${widget.product.id}';
+                launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+              },
+              child: Stack(children: [
+                ProductGalleryView(controller: _galleryController, height: 380),
+                AnimatedBuilder(
+                  animation: _galleryController,
+                  builder: (context, _) {
+                    final total = _galleryController.gallery.length;
+                    if (total <= 1) return const SizedBox.shrink();
+                    return Positioned(bottom: 16, left: 0, right: 0,
+                      child: Row(mainAxisAlignment: MainAxisAlignment.center,
+                        children: List.generate(total, (i) => Container(
+                          width: i == _galleryController.currentPage ? 20 : 8, height: 8,
+                          margin: const EdgeInsets.symmetric(horizontal: 3),
+                          decoration: BoxDecoration(
+                            color: i == _galleryController.currentPage ? Colors.white : Colors.white54,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        )),
                       ),
-                    ),
-                    ),
-              if (widget.product.images.length > 1)
-                Positioned(bottom: 16, left: 0, right: 0,
-                  child: Row(mainAxisAlignment: MainAxisAlignment.center,
-                    children: List.generate(widget.product.images.length, (i) => Container(
-                      width: i == _imgIndex ? 20 : 8, height: 8,
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      decoration: BoxDecoration(
-                        color: i == _imgIndex ? Colors.white : Colors.white54,
-                        borderRadius: BorderRadius.circular(4),
-                      ),
-                    )),
-                  ),
+                    );
+                  },
                 ),
-            ]),
+              ]),
+            ),
           ),
+        ),
+
+        // ✅ شريط المصغرات الجديد — Hero + الألوان + المقاسات فقط (بلا صور
+        // Item العامة كما اشترطت)، بتزامن ثنائي الاتجاه كامل مع المعرض أعلاه.
+        SliverToBoxAdapter(
+          child: ProductGalleryThumbnailBar(controller: _galleryController),
         ),
 
         SliverToBoxAdapter(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [

@@ -1,8 +1,8 @@
 // lib/widgets/product/product_gallery_thumbnail_bar.dart
 //
-// ✅ المرحلة 4 (جزء ثانٍ) — يعرض فقط controller.thumbnails (Hero + قيم
-// المتغيرات) كما اشترطت صراحة — لا يظهر أي صورة Item عامة هنا؛ صور Item
-// يتم تصفّحها بالسحب داخل المعرض فقط. Widget عرض بحت بلا أي منطق قرار.
+// ✅ يعرض فقط controller.thumbnails (Hero + قيم المتغيرات) — لا يظهر أي
+// صورة Item عامة هنا؛ صور Item يتم تصفّحها بالسحب داخل المعرض فقط.
+// Widget عرض بحت بلا أي منطق قرار.
 
 import 'package:flutter/material.dart';
 import '../../controllers/product_gallery_controller.dart';
@@ -19,7 +19,6 @@ class ProductGalleryThumbnailBar extends StatelessWidget {
       builder: (context, _) {
         final thumbs = controller.thumbnails;
         if (thumbs.length <= 1) {
-          // Hero فقط بلا أي متغيرات — لا داعٍ لشريط كامل لصورة واحدة.
           return const SizedBox.shrink();
         }
         return SizedBox(
@@ -73,7 +72,6 @@ class _ThumbnailTile extends StatelessWidget {
   }
 
   Widget _fallback(SougaColors colors) {
-    // ✅ لخصائص بلا صورة (نص فقط) أو ألوان معرَّفة بـ hex بلا صورة مرتبطة
     if (entry.hex != null) {
       return Container(color: _parseHex(entry.hex!));
     }

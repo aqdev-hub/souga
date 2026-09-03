@@ -1,12 +1,11 @@
 // lib/widgets/product/product_gallery_view.dart
 //
-// ✅ المرحلة 4 (جزء أول) — Widget عرض بحت، بلا أي منطق قرار داخله. كل ما
-// يفعله: يرسم الصفحة الحالية حسب نوعها (فيديو/صورة) ويُبلّغ الـ Controller
-// بالتمرير عبر pageController المُدار بالكامل هناك.
+// ✅ Widget عرض بحت، بلا أي منطق قرار داخله. كل ما يفعله: يرسم الصفحة
+// الحالية حسب نوعها (فيديو/صورة) ويُبلّغ الـ Controller بالتمرير عبر
+// pageController المُدار بالكامل هناك.
 //
 // ✅ Performance: الفيديو يُهيَّأ (Lazy Initialization) فقط عند وصول
-// صفحته لتصبح مرئية فعلياً، ويُوقَف تلقائياً عند مغادرتها — لا يُهيَّأ كل
-// الفيديوهات دفعة واحدة عند فتح الشاشة.
+// صفحته لتصبح مرئية فعلياً، ويُوقَف تلقائياً عند مغادرتها.
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -45,10 +44,7 @@ class ProductGalleryView extends StatelessWidget {
             itemBuilder: (context, index) {
               final item = gallery[index];
               if (item.isVideo) {
-                return _GalleryVideoItem(
-                  item: item,
-                  isActive: controller.currentPage == index,
-                );
+                return _GalleryVideoItem(item: item, isActive: controller.currentPage == index);
               }
               return _GalleryImageItem(item: item);
             },

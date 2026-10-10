@@ -37,7 +37,6 @@ class OrdersScreen extends StatelessWidget {
     final user = context.watch<AuthProvider>().currentUser!;
     final colors = context.colors;
 
-    // إصلاح: استخدام {} في الشرط
     if (user.uid == 'guest') {
       return Scaffold(
         body: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -90,7 +89,22 @@ class OrdersScreen extends StatelessWidget {
                   const SizedBox(height: 8),
                   Text('المتجر: ${o.sellerName}', style: TextStyle(color: colors.textSecondary, fontSize: 13)),
                   const SizedBox(height: 4),
-                  ...o.products.map((p) => Text('• ${p.name} × ${p.quantity}', style: TextStyle(fontSize: 13, color: colors.textSecondary))),
+                  // ✅ Variant-aware: يعرض خيارات التركيبة المشتراة (Snapshot
+                  // ثابت وقت الطلب) تحت كل سطر منتج، إن وُجدت.
+                  ...o.products.map((p) => Padding(
+                    padding: const EdgeInsets.only(bottom: 2),
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text('• ${p.name} × ${p.quantity}', style: TextStyle(fontSize: 13, color: colors.textSecondary)),
+                      if (p.variantOptions != null && p.variantOptions!.isNotEmpty)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 12),
+                          child: Text(
+                            p.variantOptions!.entries.map((e) => '${e.key}: ${e.value}').join(' • '),
+                            style: TextStyle(fontSize: 11, color: colors.textHint),
+                          ),
+                        ),
+                    ]),
+                  )),
                   const SizedBox(height: 8),
                   Row(children: [
                     Text('الإجمالي: ${o.totalAmount.toStringAsFixed(2)} ${o.currencySymbol}',

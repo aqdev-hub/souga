@@ -86,6 +86,15 @@ class CartScreen extends StatelessWidget {
                       Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                         Text(item.name, maxLines: 2, overflow: TextOverflow.ellipsis,
                             style: const TextStyle(fontWeight: FontWeight.w600)),
+                        // ✅ Variant-aware: يعرض خيارات التركيبة المختارة
+                        // (Snapshot تسميات) إن وُجدت — لا شيء يُعرَض لمنتج تقليدي.
+                        if (item.variantOptionValues != null && item.variantOptionValues!.isNotEmpty) ...[
+                          const SizedBox(height: 2),
+                          Text(
+                            item.variantOptionValues!.entries.map((e) => '${e.key}: ${e.value}').join(' • '),
+                            style: TextStyle(fontSize: 11.5, color: colors.textSecondary),
+                          ),
+                        ],
                         const SizedBox(height: 4),
                         Text('${item.price.toStringAsFixed(2)} ${item.currencySymbol}',
                             style: TextStyle(color: colors.primary, fontWeight: FontWeight.bold)),
@@ -95,11 +104,13 @@ class CartScreen extends StatelessWidget {
                             decoration: BoxDecoration(border: Border.all(color: colors.border), borderRadius: BorderRadius.circular(8)),
                             child: Row(children: [
                               IconButton(icon: const Icon(Icons.remove, size: 16),
-                                  onPressed: () => context.read<CartProvider>().updateQuantity(item.productId, item.quantity - 1),
+                                  onPressed: () => context.read<CartProvider>().updateQuantity(
+                                      item.productId, item.quantity - 1, variantId: item.variantId),
                                   constraints: const BoxConstraints(minWidth: 32, minHeight: 32)),
                               Text('${item.quantity}', style: const TextStyle(fontWeight: FontWeight.bold)),
                               IconButton(icon: const Icon(Icons.add, size: 16),
-                                  onPressed: () => context.read<CartProvider>().updateQuantity(item.productId, item.quantity + 1),
+                                  onPressed: () => context.read<CartProvider>().updateQuantity(
+                                      item.productId, item.quantity + 1, variantId: item.variantId),
                                   constraints: const BoxConstraints(minWidth: 32, minHeight: 32)),
                             ]),
                           ),
@@ -109,7 +120,8 @@ class CartScreen extends StatelessWidget {
                         ]),
                       ])),
                       IconButton(icon: Icon(Icons.delete_outline, color: colors.error),
-                          onPressed: () => context.read<CartProvider>().removeItem(item.productId)),
+                          onPressed: () => context.read<CartProvider>().removeItem(
+                              item.productId, variantId: item.variantId)),
                     ])),
                   );
                 },
@@ -119,9 +131,6 @@ class CartScreen extends StatelessWidget {
                 decoration: BoxDecoration(color: colors.surface,
                     boxShadow: const [BoxShadow(color: Colors.black12, blurRadius: 8, offset: Offset(0, -2))]),
                 child: Column(children: [
-                  // ✅ إصلاح باغ حسابي: كانت الشاشة تجمع كل الأسعار كرقم
-                  // واحد بغض النظر عن العملة (خطأ إن اختلفت عملات المنتجات).
-                  // الآن نعرض إجمالاً منفصلاً وصحيحاً لكل عملة موجودة فعلياً.
                   if (cart.hasMixedCurrencies)
                     Container(
                       margin: const EdgeInsets.only(bottom: 10),

@@ -81,25 +81,39 @@ class _CategorySchemaSetupScreenState extends State<CategorySchemaSetupScreen> {
       'id': 'battery', 'key': 'battery', 'name': 'البطارية', 'type': 'text',
       'isVariant': false, 'order': 7, 'predefinedValues': [],
     },
+    // ✅ جديد — العلامة التجارية: نوعها 'text' (تسمح بإدخال حر) لكنها تحمل
+    // اقتراحات شائعة (predefinedValues) تُستخدَم للبحث/الاقتراح في الواجهة
+    // (زر "ابحث عن الماركة" + "أو اكتبها" يدوياً — مطابقة التصميم المعتمد).
+    {
+      'id': 'brand', 'key': 'brand', 'name': 'العلامة التجارية', 'type': 'text',
+      'isVariant': false, 'order': 8,
+      'predefinedValues': [
+        {'id': 'nike', 'label': 'Nike'}, {'id': 'adidas', 'label': 'Adidas'},
+        {'id': 'puma', 'label': 'Puma'}, {'id': 'samsung', 'label': 'Samsung'},
+        {'id': 'apple', 'label': 'Apple'}, {'id': 'xiaomi', 'label': 'Xiaomi'},
+        {'id': 'huawei', 'label': 'Huawei'}, {'id': 'sony', 'label': 'Sony'},
+        {'id': 'lg', 'label': 'LG'}, {'id': 'other_brand', 'label': 'أخرى'},
+      ],
+    },
   ];
 
   // ── شجرة الفئات ────────────────────────────────────────────────────
   // ⚠️ id مطابق حرفياً لقيمة category القديمة عند الفئات الجذرية.
   static final List<Map<String, dynamic>> _categories = [
     {'id': 'electronics', 'name': 'إلكترونيات', 'iconKey': 'devices', 'parentId': null, 'order': 1, 'attributeIds': <String>[]},
-    {'id': 'electronics_phones', 'name': 'هواتف', 'iconKey': 'smartphone', 'parentId': 'electronics', 'order': 1, 'attributeIds': ['ram', 'storage', 'processor', 'battery']},
-    {'id': 'electronics_headphones', 'name': 'سماعات', 'iconKey': 'headphones', 'parentId': 'electronics', 'order': 2, 'attributeIds': ['battery', 'color']},
+    {'id': 'electronics_phones', 'name': 'هواتف', 'iconKey': 'smartphone', 'parentId': 'electronics', 'order': 1, 'attributeIds': ['ram', 'storage', 'processor', 'battery', 'brand']},
+    {'id': 'electronics_headphones', 'name': 'سماعات', 'iconKey': 'headphones', 'parentId': 'electronics', 'order': 2, 'attributeIds': ['battery', 'color', 'brand']},
 
     {'id': 'clothes', 'name': 'ملابس', 'iconKey': 'checkroom', 'parentId': null, 'order': 2, 'attributeIds': <String>[]},
-    {'id': 'clothes_men', 'name': 'رجالي', 'iconKey': 'man', 'parentId': 'clothes', 'order': 1, 'attributeIds': ['color', 'size', 'material']},
-    {'id': 'clothes_women', 'name': 'نسائي', 'iconKey': 'woman', 'parentId': 'clothes', 'order': 2, 'attributeIds': ['color', 'size', 'material']},
+    {'id': 'clothes_men', 'name': 'رجالي', 'iconKey': 'man', 'parentId': 'clothes', 'order': 1, 'attributeIds': ['color', 'size', 'material', 'brand']},
+    {'id': 'clothes_women', 'name': 'نسائي', 'iconKey': 'woman', 'parentId': 'clothes', 'order': 2, 'attributeIds': ['color', 'size', 'material', 'brand']},
 
     {'id': 'food', 'name': 'طعام', 'iconKey': 'fastfood', 'parentId': null, 'order': 3, 'attributeIds': <String>[]},
     {'id': 'home', 'name': 'منزل', 'iconKey': 'chair', 'parentId': null, 'order': 4, 'attributeIds': <String>[]},
-    {'id': 'sports', 'name': 'رياضة', 'iconKey': 'sports_soccer', 'parentId': null, 'order': 5, 'attributeIds': <String>[]},
+    {'id': 'sports', 'name': 'رياضة', 'iconKey': 'sports_soccer', 'parentId': null, 'order': 5, 'attributeIds': ['brand']},
     {'id': 'books', 'name': 'كتب', 'iconKey': 'menu_book', 'parentId': null, 'order': 6, 'attributeIds': <String>[]},
-    {'id': 'perfumes', 'name': 'العناية والجمال', 'iconKey': 'spa', 'parentId': null, 'order': 7, 'attributeIds': ['color']},
-    {'id': 'accessories', 'name': 'اكسسوارات', 'iconKey': 'watch', 'parentId': null, 'order': 8, 'attributeIds': ['color']},
+    {'id': 'perfumes', 'name': 'العناية والجمال', 'iconKey': 'spa', 'parentId': null, 'order': 7, 'attributeIds': ['color', 'brand']},
+    {'id': 'accessories', 'name': 'اكسسوارات', 'iconKey': 'watch', 'parentId': null, 'order': 8, 'attributeIds': ['color', 'brand']},
     {'id': 'other', 'name': 'أخرى', 'iconKey': 'category', 'parentId': null, 'order': 9, 'attributeIds': <String>[]},
   ];
 
@@ -123,25 +137,43 @@ class _CategorySchemaSetupScreenState extends State<CategorySchemaSetupScreen> {
         setState(() => _status = 'خصائص: $attrsWritten جديدة، $attrsSkipped موجودة مسبقاً...');
       }
 
-      int catsWritten = 0, catsSkipped = 0;
+      int catsWritten = 0, catsSkipped = 0, catsMerged = 0;
       for (final c in _categories) {
         final id = c['id'] as String;
         final ref = fs.collection('categories').doc(id);
         final existing = await ref.get();
-        if (existing.exists) { catsSkipped++; continue; }
-        await ref.set({
-          'name': c['name'], 'iconKey': c['iconKey'], 'parentId': c['parentId'],
-          'order': c['order'], 'attributeIds': c['attributeIds'],
-        });
-        catsWritten++;
-        setState(() => _status = 'فئات: $catsWritten جديدة، $catsSkipped موجودة مسبقاً...');
+        if (!existing.exists) {
+          await ref.set({
+            'name': c['name'], 'iconKey': c['iconKey'], 'parentId': c['parentId'],
+            'order': c['order'], 'attributeIds': c['attributeIds'],
+          });
+          catsWritten++;
+        } else {
+          // ✅ دمج بدل التخطي الكامل: فئة موجودة مسبقاً (من نشر سابق) قد
+          // ينقصها خصائص جديدة أُضيفت لاحقاً لهذا الملف (مثال: 'brand' في
+          // هذه النسخة) — ندمج القائمتين (اتحاد Union) فنُضيف الجديد فقط
+          // بلا حذف أي خاصية أضافها أحد يدوياً لاحقاً لنفس الفئة، وبلا أي
+          // تعديل على name/iconKey/order/parentId الحالية (نطاق هذا الدمج
+          // مقصور على attributeIds فقط، لتفادي الكتابة فوق أي تخصيص يدوي آخر).
+          final existingIds = List<String>.from(
+              (existing.data()?['attributeIds'] as List<dynamic>?) ?? const []);
+          final newIds = List<String>.from(c['attributeIds'] as List<String>);
+          final merged = {...existingIds, ...newIds}.toList();
+          if (merged.length != existingIds.length) {
+            await ref.update({'attributeIds': merged});
+            catsMerged++;
+          } else {
+            catsSkipped++;
+          }
+        }
+        setState(() => _status = 'فئات: $catsWritten جديدة، $catsMerged مُحدَّثة، $catsSkipped بلا تغيير...');
       }
 
       setState(() {
         _isLoading = false;
         _status = '✅ اكتمل الإعداد.\n'
             'الخصائص: $attrsWritten جديدة / $attrsSkipped كانت موجودة مسبقاً.\n'
-            'الفئات: $catsWritten جديدة / $catsSkipped كانت موجودة مسبقاً.\n\n'
+            'الفئات: $catsWritten جديدة / $catsMerged حُدِّثت بخصائص جديدة / $catsSkipped بلا تغيير.\n\n'
             'لم يتغيّر أي منتج أو شاشة حالية — هذه بيانات إعداد فقط.';
       });
     } catch (e) {

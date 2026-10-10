@@ -27,6 +27,15 @@ class ProductModel {
   // dealEndsAt: نهاية عرض "صفقة اليوم" (لعرض عدّاد تنازلي في قسم العروض).
   final double? originalPrice;
   final DateTime? dealEndsAt;
+  // ✅ جديد — مطابقة تصميم Stepper المعتمد (نسخة طبق الأصل من التصميم
+  // المرجعي المعتمد من عبدالقدوس): حقلان إضافيان اختياريان بقيمة افتراضية
+  // آمنة — أي منتج قديم بلا هذين الحقلين يُقرأ بلا أي مشكلة.
+  final String shortDescription; // وصف مختصر (سطر واحد) — منفصل عن description التفصيلي
+  final String condition;        // 'new' | 'used'
+  // ✅ جديد — "+ إضافة فئة فرعية أخرى": اسم فئة فرعية مقترَحة من البائع لا
+  // تنتمي لأي CategoryNode حقيقي بعد (نصّي بحت، للعرض فقط ولاطلاع الإدارة
+  // — لا يُنشئ فئة حقيقية ولا يُغيّر categoryId/category الفعليين).
+  final String customSubcategory;
 
   // ═══════════════════════════════════════════════════════════════════
   //  ✅ Universal Product Engine — حقول جديدة، كلها اختيارية بقيم
@@ -100,6 +109,9 @@ class ProductModel {
     required this.createdAt,
     this.originalPrice,
     this.dealEndsAt,
+    this.shortDescription = '',
+    this.condition = 'new',
+    this.customSubcategory = '',
     this.categoryId = '',
     this.attributes = const {},
     this.gallery = const [],
@@ -141,6 +153,9 @@ class ProductModel {
       createdAt: createdAt,
       originalPrice: map['originalPrice'] != null ? (map['originalPrice'] as num).toDouble() : null,
       dealEndsAt: map['dealEndsAt'] is Timestamp ? (map['dealEndsAt'] as Timestamp).toDate() : null,
+      shortDescription: (map['shortDescription'] ?? '').toString(),
+      condition: (map['condition'] ?? 'new').toString(),
+      customSubcategory: (map['customSubcategory'] ?? '').toString(),
       categoryId: (map['categoryId'] ?? '').toString(),
       attributes: Map<String, String>.from(
         (map['attributes'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
@@ -171,6 +186,11 @@ class ProductModel {
       'stock': stock,
       'sellerId': sellerId,
       'sellerName': sellerName,
+      // ✅ إصلاح باغ: كانا يُقرآن في fromMap لكن لم يُكتبا هنا إطلاقاً —
+      // أي حفظ عبر ProductRepository (بدل الكتابة اليدوية القديمة في
+      // add_product_screen.dart) كان سيُفقِد شعار المتجر ووصفه بصمت.
+      if (sellerLogo.isNotEmpty) 'sellerLogo': sellerLogo,
+      if (storeDescription.isNotEmpty) 'storeDescription': storeDescription,
       'rating': rating,
       'reviewCount': reviewCount,
       'displayWeight':  displayWeight,
@@ -179,6 +199,9 @@ class ProductModel {
       'createdAt': createdAt,
       if (originalPrice != null) 'originalPrice': originalPrice,
       if (dealEndsAt != null) 'dealEndsAt': dealEndsAt,
+      if (shortDescription.isNotEmpty) 'shortDescription': shortDescription,
+      'condition': condition,
+      if (customSubcategory.isNotEmpty) 'customSubcategory': customSubcategory,
       if (categoryId.isNotEmpty) 'categoryId': categoryId,
       if (attributes.isNotEmpty) 'attributes': attributes,
       if (gallery.isNotEmpty) 'gallery': gallery.map((e) => e.toMap()).toList(),

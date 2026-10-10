@@ -119,7 +119,6 @@ class _OrderCard extends StatelessWidget {
       await FirebaseFirestore.instance.collection('orders').doc(order.id)
           .update({'status': newStatus});
 
-      // إرسال إشعار للمشتري
       await NotificationsService.notifyOrderStatus(
         customerId: order.customerId,
         orderId: order.id,
@@ -174,10 +173,22 @@ class _OrderCard extends StatelessWidget {
                 style: TextStyle(color: colors.textSecondary, fontSize: 13)),
           ]),
           const SizedBox(height: 6),
+          // ✅ Variant-aware: يعرض خيارات التركيبة المشتراة (Snapshot ثابت
+          // وقت الطلب) — يساعد البائع على تجهيز التركيبة الصحيحة بالضبط.
           ...order.products.map((p) => Padding(
             padding: const EdgeInsets.only(bottom: 2),
-            child: Text('• ${p.name} × ${p.quantity}',
-                style: TextStyle(fontSize: 13, color: colors.textSecondary)),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('• ${p.name} × ${p.quantity}',
+                  style: TextStyle(fontSize: 13, color: colors.textSecondary)),
+              if (p.variantOptions != null && p.variantOptions!.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(right: 12),
+                  child: Text(
+                    p.variantOptions!.entries.map((e) => '${e.key}: ${e.value}').join(' • '),
+                    style: TextStyle(fontSize: 11, color: colors.primary, fontWeight: FontWeight.w600),
+                  ),
+                ),
+            ]),
           )),
           const SizedBox(height: 8),
           if (order.shippingAddress.address.isNotEmpty) ...[
@@ -186,7 +197,6 @@ class _OrderCard extends StatelessWidget {
               const SizedBox(width: 4),
               Expanded(child: Text(order.shippingAddress.address,
                   style: TextStyle(fontSize: 12, color: colors.textSecondary))),
-              // ✅ زر الخريطة — يظهر فقط إذا حدّد المشتري موقعه
               if (order.shippingAddress.locationLatLng.isNotEmpty)
                 InkWell(
                   onTap: () => _openBuyerLocation(order.shippingAddress.locationLatLng),
@@ -211,7 +221,6 @@ class _OrderCard extends StatelessWidget {
             Text('${order.totalAmount.toStringAsFixed(2)} ${order.currencySymbol}',
                 style: TextStyle(fontWeight: FontWeight.bold, color: colors.primary, fontSize: 16)),
             const Spacer(),
-            // تواصل مع المشتري
             GestureDetector(
               onTap: () async {
                 final user = context.read<AuthProvider>().currentUser;
@@ -248,7 +257,6 @@ class _OrderCard extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 8),
-            // تغيير الحالة
             if (order.status == 'pending')
               _actionButton(context, 'تأكيد', colors.info, () => _updateStatus(context, 'confirmed')),
             if (order.status == 'confirmed')

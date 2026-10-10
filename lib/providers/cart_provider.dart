@@ -1,15 +1,18 @@
 // lib/providers/cart_provider.dart
 //
-// ✅ تحديثان جوهريان في هذا الإصدار (بدون حذف أي وظيفة سابقة):
+// ✅ تحديثان جوهريان سابقان (بدون حذف أي وظيفة سابقة):
 //   1. السلة أصبحت مرتبطة بـ uid المستخدم الحالي بدل مفتاح تخزين عام
 //      واحد — يمنع تسرّب سلة مستخدم سابق لمستخدم آخر على نفس الجهاز.
 //      يُستدعى bindUser(uid) من Wrapper عند كل تغيّر في حالة تسجيل الدخول.
 //   2. حساب الإجمالي أصبح "لكل عملة على حدة" (totalsByCurrency) بدل رقم
-//      واحد يجمع عملات مختلفة كأنها متطابقة (كان هذا باغاً حسابياً حقيقياً
-//      عندما يضيف العميل منتجات بعملات مختلفة للسلة). القيمة القديمة
-//      `total`/`currencySymbol` أُبقيت للتوافق الخلفي لكن مع تحذير واضح
-//      في التعليق، والشاشات المحدَّثة (cart_screen/checkout_screen) تستخدم
-//      الآن totalsByCurrency مباشرة.
+//      واحد يجمع عملات مختلفة كأنها متطابقة.
+//
+// ✅ جديد — Variant-aware Cart (Universal Product Engine):
+//   المفتاح المنطقي لسطر السلة أصبح (productId, variantId) بدل productId
+//   فقط، حتى لا يختلط "قميص أحمر S" مع "قميص أزرق XL" كسطر واحد. كل دالة
+//   تقبل الآن `variantId` اختيارياً (افتراضي null) — أي استدعاء قديم لا
+//   يمرّره يستمر يعمل حرفياً كالسابق (توافق خلفي كامل، صفر كسر). السعر
+//   المخزَّن في كل سطر Snapshot ثابت وقت الإضافة (راجع CartItem.price).
 
 import 'dart:convert';
 import 'package:flutter/material.dart';
@@ -34,8 +37,6 @@ class CartProvider extends ChangeNotifier {
   double get total => _items.fold(0, (sum, item) => sum + item.total);
 
   /// ✅ الإجمالي الصحيح: مبلغ منفصل لكل عملة موجودة فعلياً في السلة.
-  /// مفتاح الخريطة "رمز العملة" (currencySymbol) وقيمتها المجموع بهذه
-  /// العملة فقط — لا يوجد أي جمع خاطئ بين عملات مختلفة بعد الآن.
   Map<String, double> get totalsByCurrency {
     final map = <String, double>{};
     for (final item in _items) {
@@ -51,9 +52,7 @@ class CartProvider extends ChangeNotifier {
 
   String _keyFor(String uid) => '$_cartKeyPrefix$uid';
 
-  /// ✅ جديد — يُستدعى من Wrapper عند كل تغيّر لحالة تسجيل الدخول (بما فيها
-  /// الدخول كزائر أو تسجيل الخروج) لتحميل سلة هذا المستخدم تحديداً بدل
-  /// سلة عامة مشتركة بين كل من يستخدم نفس الجهاز.
+  /// ✅ يُستدعى من Wrapper عند كل تغيّر لحالة تسجيل الدخول.
   Future<void> bindUser(String? uid) async {
     final targetUid = (uid == null || uid.isEmpty) ? _guestKey : uid;
     if (targetUid == _boundUid) return; // لا تغيير فعلي
@@ -88,30 +87,52 @@ class CartProvider extends ChangeNotifier {
     } catch (_) {}
   }
 
-  void addItem(ProductModel product, {int quantity = 1}) {
-    final index = _items.indexWhere((i) => i.productId == product.id);
+  /// ✅ المفتاح المنطقي الموحَّد لسطر سلة — (productId, variantId). منتج
+  /// تقليدي بلا متغيرات: variantId=null، فيتطابق فقط مع نفسه (كما كان
+  /// السلوك دائماً). منتج بمتغيرات: كل تركيبة (SKU) سطر مستقل تماماً.
+  int _indexOf(String productId, String? variantId) =>
+      _items.indexWhere((i) => i.productId == productId && i.variantId == variantId);
+
+  /// [variantId]/[variantOptionValues]: مُمرَّرة فقط لمنتج بمتغيرات — راجع
+  /// ProductVariantModel.id و"snapshot التسميات" في product_detail_screen.dart.
+  /// [unitPriceOverride]: سعر الوحدة الفعلي وقت الإضافة (سعر التركيبة
+  /// المختارة عادةً) — إن لم يُمرَّر، يُستخدَم product.price كما كان سابقاً
+  /// (توافق خلفي كامل لكل استدعاء قديم من ProductCard وغيره).
+  void addItem(
+    ProductModel product, {
+    int quantity = 1,
+    String? variantId,
+    Map<String, String>? variantOptionValues,
+    double? unitPriceOverride,
+  }) {
+    final index = _indexOf(product.id, variantId);
     if (index >= 0) {
       _items[index].quantity += quantity;
+      // ✅ لا نُحدِّث السعر المخزَّن لسطر موجود مسبقاً — يبقى Snapshot وقت
+      // أول إضافة فعلية لهذه التركيبة بالذات، حتى لا "يتحرّك" السعر
+      // المعروض في السلة تبعاً لأي تعديل لاحق على المنتج/التركيبة.
     } else {
       _items.add(CartItem(
         productId:      product.id,
         name:           product.name,
-        price:          product.price,
+        price:          unitPriceOverride ?? product.price,
         quantity:       quantity,
         image:          product.firstImage,
         sellerId:       product.sellerId,
         sellerName:     product.sellerName,
         currencySymbol: product.currencySymbol,
         currencyCode:   product.currencyCode,
+        variantId:            variantId,
+        variantOptionValues:  variantOptionValues,
       ));
     }
     notifyListeners();
     _saveToStorage();
   }
 
-  void updateQuantity(String productId, int quantity) {
-    if (quantity <= 0) { removeItem(productId); return; }
-    final index = _items.indexWhere((i) => i.productId == productId);
+  void updateQuantity(String productId, int quantity, {String? variantId}) {
+    if (quantity <= 0) { removeItem(productId, variantId: variantId); return; }
+    final index = _indexOf(productId, variantId);
     if (index >= 0) {
       _items[index].quantity = quantity;
       notifyListeners();
@@ -119,8 +140,8 @@ class CartProvider extends ChangeNotifier {
     }
   }
 
-  void removeItem(String productId) {
-    _items.removeWhere((i) => i.productId == productId);
+  void removeItem(String productId, {String? variantId}) {
+    _items.removeWhere((i) => i.productId == productId && i.variantId == variantId);
     notifyListeners();
     _saveToStorage();
   }
@@ -131,9 +152,10 @@ class CartProvider extends ChangeNotifier {
     _saveToStorage();
   }
 
-  bool isInCart(String productId) => _items.any((i) => i.productId == productId);
-  int getQuantity(String productId) {
-    final index = _items.indexWhere((i) => i.productId == productId);
+  bool isInCart(String productId, {String? variantId}) => _indexOf(productId, variantId) >= 0;
+
+  int getQuantity(String productId, {String? variantId}) {
+    final index = _indexOf(productId, variantId);
     return index >= 0 ? _items[index].quantity : 0;
   }
 }

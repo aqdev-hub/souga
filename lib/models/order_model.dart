@@ -7,12 +7,26 @@ class OrderItem {
   final double price;
   final String image;
 
+  // ═══════════════════════════════════════════════════════════════════
+  //  ✅ Variant-aware Order — Universal Product Engine
+  //  نسخة مستقلة تماماً (Snapshot) من بيانات التركيبة وقت الشراء —
+  //  تُكتَب مرة واحدة إلى مستند الطلب في checkout_screen.dart، ولا تُقرأ
+  //  أو تُشتق حياً من المنتج/التركيبة بعد تلك اللحظة إطلاقاً. حتى لو
+  //  عُدِّل سعر المنتج، أو حُذفت التركيبة، أو أُعيدت تسمية الخاصية لاحقاً
+  //  — سجل هذا الطلب يبقى صحيحاً تاريخياً كما كان وقت الشراء بالضبط.
+  //  كلاهما null لمنتج تقليدي بلا متغيرات (توافق خلفي كامل).
+  // ═══════════════════════════════════════════════════════════════════
+  final String? variantId;
+  final Map<String, String>? variantOptions; // {'اللون': 'أحمر', 'المقاس': 'XL'}
+
   OrderItem({
     required this.productId,
     required this.name,
     required this.quantity,
     required this.price,
     required this.image,
+    this.variantId,
+    this.variantOptions,
   });
 
   double get total => price * quantity;
@@ -24,6 +38,12 @@ class OrderItem {
       quantity: map['quantity'] ?? 1,
       price: (map['price'] ?? 0).toDouble(),
       image: map['image'] ?? '',
+      variantId: (map['variantId'] as String?)?.trim().isNotEmpty == true
+          ? map['variantId'] as String
+          : null,
+      variantOptions: map['variantOptions'] != null
+          ? Map<String, String>.from(map['variantOptions'] as Map)
+          : null,
     );
   }
 
@@ -34,6 +54,8 @@ class OrderItem {
       'quantity': quantity,
       'price': price,
       'image': image,
+      if (variantId != null) 'variantId': variantId,
+      if (variantOptions != null) 'variantOptions': variantOptions,
     };
   }
 }
@@ -89,8 +111,7 @@ class OrderModel {
   final String status;
   final ShippingAddress shippingAddress;
   final DateTime createdAt;
-  // ✅ جديد — عملة هذا الطلب تحديداً (كل طلب الآن يخص بائعاً واحداً
-  // وعملة واحدة فقط، بدل افتراض عملة أول عنصر في السلة كما كان سابقاً).
+  // ✅ عملة هذا الطلب تحديداً (كل طلب يخص بائعاً واحداً وعملة واحدة فقط).
   final String currencyCode;
   final String currencySymbol;
 

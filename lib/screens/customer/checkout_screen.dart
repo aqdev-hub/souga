@@ -46,24 +46,16 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
 
   // ── فتح خرائط جوجل لتحديد الموقع (يعيد lat,lng من رابط المشاركة) ──────────
   Future<void> _pickLocationOnMap() async {
-    // نفتح Google Maps لتحديد الموقع
-    // المستخدم يختار موقعه ثم يشارك الرابط/الإحداثيات
-    // بما أننا لا نملك حزمة geolocator، نستخدم حل مبسّط:
-    // نفتح Google Maps مع زر تحديد الموقع الحالي
     final uri = Uri.parse('https://maps.google.com/maps?q=&output=classic');
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     }
-
-    // نعرض نافذة لإدخال الإحداثيات يدوياً بعد نسخها من Maps
     if (!mounted) return;
     _showCoordinatesDialog();
   }
 
   void _showCoordinatesDialog() {
     final colors = context.colors;
-
-    // حقل واحد بصيغة "lat,lng" — نفس طريقة موقع المتجر
     final coordCtrl = TextEditingController(text: _locationLatLng);
     showDialog(
       context: context,
@@ -126,9 +118,8 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       final user = context.read<AuthProvider>().currentUser!;
       final cart = context.read<CartProvider>();
 
-      // ✅ إصلاح باغ تعدد العملات: التجميع الآن بمفتاح مركّب
-      // "sellerId|currencySymbol" بدل sellerId فقط، حتى لو باع نفس البائع
-      // منتجات بعملات مختلفة، يُنشأ طلب منفصل لكل عملة بمبلغ صحيح رياضياً.
+      // ✅ التجميع بمفتاح مركّب "sellerId|currencySymbol" — طلب منفصل لكل
+      // عملة حتى لو باع نفس البائع منتجات بعملات مختلفة.
       final Map<String, List<dynamic>> bySellerCurrency = {};
       for (final item in cart.items) {
         final key = '${item.sellerId}|${item.currencySymbol}';
@@ -156,8 +147,13 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             productId: item.productId as String,
             name:      item.name      as String,
             quantity:  item.quantity  as int,
-            price:     item.price     as double,
+            price:     item.price     as double, // ✅ Snapshot أصلاً من CartItem
             image:     item.image     as String,
+            // ✅ Variant-aware Order: نسخ مباشر ومستقل تماماً من الـ
+            // Snapshot الموجود بالفعل في CartItem — من لحظة الكتابة هنا لا
+            // علاقة له بالمنتج/التركيبة الأصليين بعد الآن، حتى لو حُذفا.
+            variantId: item.variantId as String?,
+            variantOptions: item.variantOptionValues as Map<String, String>?,
           )).toList(),
           totalAmount:  total,
           status:       OrderModel.pending,
@@ -166,7 +162,7 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             phone:          _phoneCtrl.text.trim(),
             address:        _addressCtrl.text.trim(),
             notes:          _notesCtrl.text.trim(),
-            locationLatLng: _locationLatLng,   // ✅
+            locationLatLng: _locationLatLng,
           ),
           createdAt: DateTime.now(),
           currencyCode:   currencyCode,
@@ -222,7 +218,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
         child: ListView(
           padding: const EdgeInsets.all(16),
           children: [
-            // ── معلومات التوصيل ──────────────────────────────────────────────
             const _SectionTitle(title: 'معلومات التوصيل', icon: Icons.local_shipping_outlined),
             const SizedBox(height: 12),
 
@@ -247,7 +242,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             ),
             const SizedBox(height: 12),
 
-            // ── حقل العنوان + زر الخريطة ─────────────────────────────────────
             const Text('عنوان التوصيل',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
             const SizedBox(height: 8),
@@ -264,7 +258,6 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             ),
             const SizedBox(height: 8),
 
-            // ── زر تحديد الموقع على الخريطة ──────────────────────────────────
             OutlinedButton.icon(
               onPressed: _pickLocationOnMap,
               icon: Icon(
@@ -304,17 +297,26 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
             ),
             const SizedBox(height: 24),
 
-            // ── ملخص الطلب ───────────────────────────────────────────────────
             const _SectionTitle(title: 'ملخص الطلب', icon: Icons.receipt_outlined),
             const SizedBox(height: 12),
 
             ...cart.items.map((item) => Padding(
               padding: const EdgeInsets.symmetric(vertical: 4),
-              child: Row(children: [
-                Expanded(child: Text('${item.name} × ${item.quantity}',
-                    style: const TextStyle(fontSize: 13))),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(
+                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                    Text('${item.name} × ${item.quantity}',
+                        style: const TextStyle(fontSize: 13)),
+                    // ✅ عرض خيارات التركيبة المختارة (إن وُجدت) تحت اسم المنتج
+                    if (item.variantOptionValues != null && item.variantOptionValues!.isNotEmpty)
+                      Text(
+                        item.variantOptionValues!.entries.map((e) => '${e.key}: ${e.value}').join(' • '),
+                        style: TextStyle(fontSize: 11, color: colors.textSecondary),
+                      ),
+                  ]),
+                ),
                 Text(
-                  '${item.total.toStringAsFixed(2)} ${item.currencySymbol}', // ✅ عملة صحيحة
+                  '${item.total.toStringAsFixed(2)} ${item.currencySymbol}',
                   style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
                 ),
               ]),

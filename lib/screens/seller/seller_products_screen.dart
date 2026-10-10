@@ -1,4 +1,10 @@
 // lib/screens/seller/seller_products_screen.dart
+//
+// ✅ Universal Product Engine — الوجهة الافتراضية لإضافة/تعديل منتج
+// أصبحت الآن `ProductFormStepperScreen` (بموافقة صريحة)، بدل
+// `add_product_screen.dart` القديم. الملف القديم لم يُحذَف بعد عمداً
+// (راجع HANDOFF.md) — يبقى كخيار تراجع سريع لو ظهرت مشكلة غير متوقعة
+// بعد أول تشغيل فعلي على SDK حقيقي.
 
 import 'dart:async';
 import 'package:flutter/material.dart';
@@ -10,7 +16,7 @@ import '../../services/imagekit_service.dart';
 import '../../services/marketing_service.dart';
 import '../../services/seo_rebuild_service.dart';
 import '../../utils/app_colors.dart';
-import 'add_product_screen.dart';
+import 'product_form_stepper_screen.dart';
 
 // ── أسماء التصنيفات بالعربية — تُستخدم فقط لبناء سياق إعلان الذكاء الاصطناعي ──
 const List<Map<String, String>> _kSellerProductCategories = [
@@ -88,6 +94,12 @@ class SellerProductsScreen extends StatelessWidget {
     ));
   }
 
+  void _openProductForm(BuildContext context, {ProductModel? product}) {
+    Navigator.push(context, MaterialPageRoute(
+      builder: (_) => ProductFormStepperScreen(product: product),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     final user = context.watch<AuthProvider>().currentUser!;
@@ -114,8 +126,7 @@ class SellerProductsScreen extends StatelessWidget {
                     style: TextStyle(fontSize: 18, color: colors.textSecondary)),
                 const SizedBox(height: 24),
                 ElevatedButton.icon(
-                  onPressed: () => Navigator.push(context,
-                      MaterialPageRoute(builder: (_) => const AddProductScreen())),
+                  onPressed: () => _openProductForm(context),
                   icon: const Icon(Icons.add),
                   label: const Text('أضف أول منتج'),
                 ),
@@ -150,9 +161,9 @@ class SellerProductsScreen extends StatelessWidget {
                   ),
                   title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.bold)),
                   subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('${p.price.toStringAsFixed(2)} ر.س',
+                    Text('${p.price.toStringAsFixed(2)} ${p.currencySymbol}',
                         style: TextStyle(color: colors.primary, fontWeight: FontWeight.bold)),
-                    Text('الكمية: ${p.stock}',
+                    Text(p.hasVariants ? 'منتج بمتغيرات' : 'الكمية: ${p.stock}',
                         style: TextStyle(fontSize: 12, color: colors.textSecondary)),
                   ]),
                   trailing: Row(mainAxisSize: MainAxisSize.min, children: [
@@ -163,8 +174,8 @@ class SellerProductsScreen extends StatelessWidget {
                     ),
                     IconButton(
                       icon: Icon(Icons.edit_outlined, color: colors.primary),
-                      onPressed: () => Navigator.push(context,
-                          MaterialPageRoute(builder: (_) => AddProductScreen(product: p))),
+                      tooltip: 'تعديل المنتج',
+                      onPressed: () => _openProductForm(context, product: p),
                     ),
                     IconButton(
                       icon: Icon(Icons.delete_outline, color: colors.error),
@@ -179,8 +190,7 @@ class SellerProductsScreen extends StatelessWidget {
         },
       ),
       floatingActionButton: FloatingActionButton.extended(
-        onPressed: () => Navigator.push(context,
-            MaterialPageRoute(builder: (_) => const AddProductScreen())),
+        onPressed: () => _openProductForm(context),
         backgroundColor: colors.primary,
         icon: const Icon(Icons.add, color: Colors.white),
         label: const Text('إضافة منتج', style: TextStyle(color: Colors.white)),

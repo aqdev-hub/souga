@@ -9,14 +9,20 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../models/product_model.dart';
 import '../../models/review_model.dart';
+import '../../models/product_variant_model.dart';
+import '../../models/product_option_ref_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/cart_provider.dart';
 import '../../providers/favorites_provider.dart';
+import '../../repositories/variant_repository.dart';
+import '../../controllers/product_gallery_controller.dart';
 import '../../services/ai_assistant_service.dart';
 import '../../services/reviews_service.dart';
 import '../../services/imagekit_service.dart';
 import '../../utils/app_colors.dart';
 import '../../widgets/product_card.dart';
+import '../../widgets/product/product_gallery_view.dart';
+import '../../widgets/product/product_gallery_thumbnail_bar.dart';
 import '../../services/chat_service.dart';
 import '../shared/chat_screen.dart';
 import '../../services/share_options_sheet.dart';
@@ -37,6 +43,57 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
   // عبر product.effectiveGallery المبني في ProductModel نفسه.
   late final ProductGalleryController _galleryController;
   int _qty = 1;
+
+  // ✅ Variant Selector — التركيبة المطابقة حالياً لاختيارات المستخدم
+  // (null إن كان المنتج بلا متغيرات، أو لم تكتمل الاختيارات بعد، أو لم
+  // تُطابق أي SKU حقيقي في subcollection variants).
+  ProductVariantModel? _selectedVariant;
+
+  /// السعر الفعلي المعروض — سعر التركيبة المختارة إن وُجدت متغيرات،
+  /// وإلا سعر المنتج الأساسي كما كان دائماً (Fallback كامل للمنتجات القديمة).
+  double get _effectivePrice =>
+      (widget.product.hasVariants && _selectedVariant != null)
+          ? _selectedVariant!.price
+          : widget.product.price;
+
+  /// المخزون الفعلي — مخزون التركيبة المختارة تحديداً (وليس مخزون المنتج
+  /// العام) عندما توجد متغيرات؛ صفر إن لم يُحدَّد بعد اختيار كامل.
+  int get _effectiveStock => widget.product.hasVariants
+      ? (_selectedVariant?.stock ?? 0)
+      : widget.product.stock;
+
+  /// هل الشراء ممكن الآن؟ (تُستخدم لتفعيل/تعطيل أزرار السلة والشراء).
+  bool get _canPurchase => widget.product.hasVariants
+      ? (_selectedVariant != null && _selectedVariant!.isActive && _selectedVariant!.stock > 0)
+      : widget.product.stock > 0;
+
+  void _onVariantResolved(ProductVariantModel? variant) {
+    if (variant?.id == _selectedVariant?.id) return; // لا تغيير فعلي
+    setState(() {
+      _selectedVariant = variant;
+      final maxQty = _effectiveStock;
+      if (_qty > maxQty) _qty = maxQty > 0 ? 1 : 1;
+    });
+  }
+
+  /// ✅ Snapshot تسميات (وليس ids) للتركيبة المختارة حالياً — يُستخدَم عند
+  /// الإضافة للسلة حتى يبقى عرض السلة صحيحاً للأبد حتى لو تغيّر تعريف
+  /// الخاصية (attribute_definitions) أو حُذفت قيمة منها لاحقاً في Firestore.
+  /// يُعيد null لمنتج بلا متغيرات (لا شيء لعرضه في السلة إضافةً للاسم).
+  Map<String, String>? _buildVariantLabelSnapshot() {
+    final variant = _selectedVariant;
+    if (variant == null) return null;
+    final result = <String, String>{};
+    for (final key in widget.product.variantKeys) {
+      final valueId = variant.optionValues[key];
+      if (valueId == null) continue;
+      final refs = widget.product.optionSets[key] ?? const [];
+      final match = refs.where((r) => r.valueId == valueId);
+      final label = match.isNotEmpty ? match.first.label : valueId;
+      result[attributeDisplayLabel(key)] = label;
+    }
+    return result.isEmpty ? null : result;
+  }
 
   @override
   void initState() {
@@ -164,80 +221,23 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
     final uid     = user?.uid ?? 'guest';
     final cart    = context.watch<CartProvider>();
     final favs    = context.watch<FavoritesProvider>();
-    final inCart  = cart.isInCart(widget.product.id);
+    // ✅ Variant-aware: يتحقق من السطر المطابق للتركيبة المختارة تحديداً
+    // (أو المنتج التقليدي إن لم توجد متغيرات) بدل أي سطر لهذا المنتج.
+    final inCart  = cart.isInCart(widget.product.id, variantId: _selectedVariant?.id);
     final colors  = context.colors;
 
     return Scaffold(
       backgroundColor: colors.background,
       body: CustomScrollView(slivers: [
         // ─── صور المنتج ──────────────────────────────────
-        SliverAppBar(
-          expandedHeight: 380, pinned: true, backgroundColor: colors.primary,
-          actions: [
-            // زر المشاركة
-            IconButton(
-              icon: const Icon(Icons.share_outlined, color: Colors.white),
-              tooltip: 'مشاركة المنتج',
-              onPressed: _shareProduct,
-            ),
-            // زر المفضلة
-            StreamBuilder<bool>(
-              stream: favs.isFavoriteStream(uid, widget.product.id),
-              builder: (_, snap) {
-                final isFav = snap.data ?? false;
-                return IconButton(
-                  icon: Icon(isFav ? Icons.favorite : Icons.favorite_outline,
-                      color: isFav ? Colors.red : Colors.white),
-                  onPressed: () {
-                    if (isGuest) { _requireLogin(); return; }
-                    favs.toggleFavorite(
-                      uid: uid, productId: widget.product.id,
-                      productName: widget.product.name,
-                      productImage: widget.product.firstImage,
-                    );
-                  },
-                );
-              },
-            ),
-          ],
-          flexibleSpace: FlexibleSpaceBar(
-            // ✅ محرك المعرض الجديد بالكامل — يحل محل PageView اليدوي و
-            // _imgIndex. يعمل تلقائياً مع صورة واحدة (منتج قديم)، أو
-            // فيديو+صور+ألوان+مقاسات (منتج جديد) دون أي فرع خاص هنا.
-            background: GestureDetector(
-              // ✅ أُبقيت خاصية "فتح رابط المنتج بالمتصفح" بالضغط المطوّل
-              // كما كانت (مفيدة لمشاركة/نسخ الرابط). أزلت النقر العادي
-              // القديم لفتح المتصفح لأنه كان يتعارض الآن مع نقرة تشغيل/
-              // إيقاف الفيديو داخل المعرض الجديد، ولم يكن ضرورياً أصلاً
-              // (المستخدم بالفعل داخل صفحة المنتج في التطبيق).
-              onLongPress: () {
-                final url = 'https://souga-5fdb3.web.app/product/${widget.product.id}';
-                launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
-              },
-              child: Stack(children: [
-                ProductGalleryView(controller: _galleryController, height: 380),
-                AnimatedBuilder(
-                  animation: _galleryController,
-                  builder: (context, _) {
-                    final total = _galleryController.gallery.length;
-                    if (total <= 1) return const SizedBox.shrink();
-                    return Positioned(bottom: 16, left: 0, right: 0,
-                      child: Row(mainAxisAlignment: MainAxisAlignment.center,
-                        children: List.generate(total, (i) => Container(
-                          width: i == _galleryController.currentPage ? 20 : 8, height: 8,
-                          margin: const EdgeInsets.symmetric(horizontal: 3),
-                          decoration: BoxDecoration(
-                            color: i == _galleryController.currentPage ? Colors.white : Colors.white54,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                        )),
-                      ),
-                    );
-                  },
-                ),
-              ]),
-            ),
-          ),
+        _ProductGalleryHeader(
+          product: widget.product,
+          controller: _galleryController,
+          onSharePressed: _shareProduct,
+          uid: uid,
+          isGuest: isGuest,
+          favs: favs,
+          onRequireLogin: _requireLogin,
         ),
 
         // ✅ شريط المصغرات الجديد — Hero + الألوان + المقاسات فقط (بلا صور
@@ -253,10 +253,19 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
               Expanded(child: Text(widget.product.name,
                   style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
               const SizedBox(width: 12),
-              Text('${widget.product.price.toStringAsFixed(2)} ${widget.product.currencySymbol}',
+              Text('${_effectivePrice.toStringAsFixed(2)} ${widget.product.currencySymbol}',
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: colors.primary)),
             ]),
             const SizedBox(height: 12),
+
+            // ─── اختيار المتغيرات (لون/مقاس/...) — تظهر شرطياً فقط عند
+            // hasVariants==true، وتُحدِّث السعر/المخزون أعلاه فوراً حسب
+            // التركيبة المختارة، وتُزامن معرض الصور عبر jumpToOption. ──
+            _VariantSelectorSection(
+              product: widget.product,
+              galleryController: _galleryController,
+              onVariantResolved: _onVariantResolved,
+            ),
 
             // ─── بطاقة معلومات المتجر المحسّنة ──────────────
             _SellerInfoCard(
@@ -275,79 +284,23 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             Row(children: [
               _RatingBadge(rating: widget.product.rating, count: widget.product.reviewCount),
               const Spacer(),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: widget.product.stock > 0
-                      ? colors.success.withValues(alpha: 0.1)
-                      : colors.error.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Text(widget.product.stock > 0 ? 'متوفر (${widget.product.stock})' : 'غير متوفر',
-                    style: TextStyle(fontSize: 12,
-                        color: widget.product.stock > 0 ? colors.success : colors.error)),
+              _StockBadge(
+                awaitingSelection: widget.product.hasVariants && _selectedVariant == null,
+                hasStock: _effectiveStock > 0,
+                stock: _effectiveStock,
               ),
             ]),
             const SizedBox(height: 12),
 
             // ─── أزرار الإعجاب والمشاركة ──────────────────
-            Row(children: [
-              StreamBuilder<int>(
-                stream: favs.likesCountStream(widget.product.id),
-                builder: (_, snap) {
-                  final count = snap.data ?? 0;
-                  return StreamBuilder<bool>(
-                    stream: favs.isLikedStream(uid, widget.product.id),
-                    builder: (_, likeSnap) {
-                      final liked = likeSnap.data ?? false;
-                      return GestureDetector(
-                        onTap: () {
-                          if (isGuest) { _requireLogin(); return; }
-                          favs.toggleLike(uid: uid, productId: widget.product.id);
-                        },
-                        child: Row(children: [
-                          Icon(liked ? Icons.thumb_up : Icons.thumb_up_outlined,
-                              color: liked ? colors.primary : colors.textSecondary, size: 20),
-                          const SizedBox(width: 4),
-                          Text('$count', style: TextStyle(fontSize: 13, color: colors.textSecondary)),
-                        ]),
-                      );
-                    },
-                  );
-                },
-              ),
-              const SizedBox(width: 20),
-              StreamBuilder<List<String>>(
-                stream: favs.favoritesStream(uid),
-                builder: (_, snap) {
-                  final isFav = (snap.data ?? []).contains(widget.product.id);
-                  return GestureDetector(
-                    onTap: () {
-                      if (isGuest) { _requireLogin(); return; }
-                      favs.toggleFavorite(uid: uid, productId: widget.product.id,
-                          productName: widget.product.name, productImage: widget.product.firstImage);
-                    },
-                    child: Row(children: [
-                      Icon(isFav ? Icons.bookmark : Icons.bookmark_outline,
-                          color: isFav ? colors.accent : colors.textSecondary, size: 20),
-                      const SizedBox(width: 4),
-                      Text(isFav ? 'محفوظ' : 'حفظ',
-                          style: TextStyle(fontSize: 13, color: colors.textSecondary)),
-                    ]),
-                  );
-                },
-              ),
-              const Spacer(),
-              // زر مشاركة مدمج في الصف
-              GestureDetector(
-                onTap: _shareProduct,
-                child: Row(children: [
-                  Icon(Icons.share_outlined, color: colors.textSecondary, size: 20),
-                  const SizedBox(width: 4),
-                  Text('مشاركة', style: TextStyle(fontSize: 13, color: colors.textSecondary)),
-                ]),
-              ),
-            ]),
+            _LikeShareRow(
+              product: widget.product,
+              uid: uid,
+              isGuest: isGuest,
+              favs: favs,
+              onRequireLogin: _requireLogin,
+              onShare: _shareProduct,
+            ),
             const SizedBox(height: 16),
 
             // ✅ زر "اسأل سوجا" الذكي: يفتح محادثة سريعة عن هذا المنتج تحديداً
@@ -358,56 +311,53 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             const SizedBox(height: 12),
 
             // ─── الوصف ────────────────────────────────────
-            const Text('الوصف', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            Text(widget.product.description,
-                style: TextStyle(fontSize: 14, color: colors.textSecondary, height: 1.6)),
+            _DescriptionSection(description: widget.product.description),
             const SizedBox(height: 20),
 
+            // ✅ جديد — قسم المواصفات: شرطي بالكامل حسب product.attributes
+            // (خصائص وصفية isVariant=false — مثال: الرام/المعالج/نوع القماش).
+            // منتج قديم/بسيط بلا attributes لا يُبنى له هذا القسم إطلاقاً.
+            _SpecificationsSection(attributes: widget.product.attributes),
+            if (widget.product.attributes.isNotEmpty) const SizedBox(height: 20),
+
             // ─── الكمية ───────────────────────────────────
-            Row(children: [
-              const Text('الكمية:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-              const SizedBox(width: 16),
-              Container(
-                decoration: BoxDecoration(border: Border.all(color: colors.border),
-                    borderRadius: BorderRadius.circular(8)),
-                child: Row(children: [
-                  IconButton(icon: const Icon(Icons.remove), iconSize: 20,
-                      onPressed: _qty > 1 ? () => setState(() => _qty--) : null),
-                  Text('$_qty', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                  IconButton(icon: const Icon(Icons.add), iconSize: 20,
-                      onPressed: _qty < widget.product.stock ? () => setState(() => _qty++) : null),
-                ]),
-              ),
-            ]),
+            _QuantitySelector(
+              qty: _qty,
+              maxStock: _effectiveStock,
+              onChanged: (v) => setState(() => _qty = v),
+            ),
             const SizedBox(height: 20),
 
             // ─── أزرار الشراء ─────────────────────────────
-            Row(children: [
-              Expanded(child: OutlinedButton.icon(
-                onPressed: widget.product.stock > 0 ? () {
-                  if (isGuest) { _requireLogin(); return; }
-                  cart.addItem(widget.product, quantity: _qty);
-                  ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                    content: const Text('✅ تم إضافة المنتج للسلة'),
-                    backgroundColor: colors.success));
-                } : null,
-                icon: Icon(inCart ? Icons.shopping_cart : Icons.shopping_cart_outlined),
-                label: Text(inCart ? 'في السلة' : 'إضافة للسلة'),
-                style: OutlinedButton.styleFrom(foregroundColor: colors.primary,
-                    side: BorderSide(color: colors.primary), minimumSize: const Size(0, 48)),
-              )),
-              const SizedBox(width: 12),
-              Expanded(child: ElevatedButton(
-                onPressed: widget.product.stock > 0 ? () {
-                  if (isGuest) { _requireLogin(); return; }
-                  cart.addItem(widget.product, quantity: _qty);
-                  Navigator.pop(context);
-                } : null,
-                style: ElevatedButton.styleFrom(minimumSize: const Size(0, 48)),
-                child: const Text('شراء الآن'),
-              )),
-            ]),
+            // ✅ Variant-aware Cart: السطر يُخزَّن بمفتاح (productId,
+            // variantId)، والسعر المخزَّن Snapshot ثابت وقت الإضافة
+            // (سعر التركيبة المختارة إن وُجدت، وإلا سعر المنتج كالمعتاد).
+            _PurchaseButtonsRow(
+              canPurchase: _canPurchase,
+              inCart: inCart,
+              onAddToCart: () {
+                if (isGuest) { _requireLogin(); return; }
+                cart.addItem(
+                  widget.product, quantity: _qty,
+                  variantId: _selectedVariant?.id,
+                  variantOptionValues: _buildVariantLabelSnapshot(),
+                  unitPriceOverride: _effectivePrice,
+                );
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: const Text('✅ تم إضافة المنتج للسلة'),
+                  backgroundColor: colors.success));
+              },
+              onBuyNow: () {
+                if (isGuest) { _requireLogin(); return; }
+                cart.addItem(
+                  widget.product, quantity: _qty,
+                  variantId: _selectedVariant?.id,
+                  variantOptionValues: _buildVariantLabelSnapshot(),
+                  unitPriceOverride: _effectivePrice,
+                );
+                Navigator.pop(context);
+              },
+            ),
           ])),
 
           Divider(thickness: 8, color: colors.divider),
@@ -1428,5 +1378,607 @@ class _SummaryPointsList extends StatelessWidget {
         ]),
       )).toList(),
     );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ✅ Variant Selector — Universal Product Engine
+//
+//  يُبنى فوق VariantRepository و product.optionSets/variantKeys. يظهر
+//  شرطياً فقط عند hasVariants==true (منتج بلا متغيرات لا يعرض أي شيء هنا
+//  — Fallback كامل للمنتجات القديمة والبسيطة). كل اختيار قيمة:
+//    1) يُحدِّث الحالة المحلية (أي قيمة مختارة لكل خاصية).
+//    2) يُزامن معرض الصور عبر galleryController.jumpToOption (لون/مقاس).
+//    3) يُطابق التركيبة الكاملة مقابل قائمة variants الحية من Firestore،
+//       ويُبلّغ الشاشة الأب بالتركيبة المطابقة (أو null) لتحديث
+//       السعر/المخزون/إمكانية الشراء المعروضة أعلى الصفحة.
+// ═══════════════════════════════════════════════════════════════════════════
+class _VariantSelectorSection extends StatefulWidget {
+  final ProductModel product;
+  final ProductGalleryController galleryController;
+  final ValueChanged<ProductVariantModel?> onVariantResolved;
+
+  const _VariantSelectorSection({
+    required this.product,
+    required this.galleryController,
+    required this.onVariantResolved,
+  });
+
+  @override
+  State<_VariantSelectorSection> createState() => _VariantSelectorSectionState();
+}
+
+class _VariantSelectorSectionState extends State<_VariantSelectorSection> {
+  final VariantRepository _variantRepo = VariantRepository();
+  // key الخاصية (مثال 'color') → valueId المختار حالياً (مثال 'red')
+  final Map<String, String> _selected = {};
+
+  @override
+  void initState() {
+    super.initState();
+    // ✅ نبدأ باختيار أول قيمة متاحة لكل خاصية متغيّرة — تطابق حالة
+    // البداية الافتراضية لمحرك المعرض (الذي يبدأ من الصفحة صفر أيضاً).
+    for (final key in widget.product.variantKeys) {
+      final values = widget.product.optionSets[key] ?? const [];
+      if (values.isEmpty) continue;
+      final firstAvailable = values.where((v) => v.isAvailable);
+      _selected[key] = firstAvailable.isNotEmpty ? firstAvailable.first.valueId : values.first.valueId;
+    }
+  }
+
+  void _select(String key, String valueId) {
+    if (_selected[key] == valueId) return;
+    setState(() => _selected[key] = valueId);
+    widget.galleryController.jumpToOption(key, valueId);
+  }
+
+  ProductVariantModel? _matchVariant(List<ProductVariantModel> variants) {
+    if (_selected.length != widget.product.variantKeys.length) return null;
+    for (final v in variants) {
+      final isMatch = widget.product.variantKeys.every((k) => v.optionValues[k] == _selected[k]);
+      if (isMatch) return v;
+    }
+    return null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // ✅ Fallback كامل: منتج بلا متغيرات (كل المنتجات القديمة/البسيطة)
+    // لا يُبنى له أي StreamBuilder أو استعلام إضافي — يُعيد SizedBox فارغاً فوراً.
+    if (!widget.product.hasVariants || widget.product.variantKeys.isEmpty) {
+      return const SizedBox.shrink();
+    }
+    final colors = context.colors;
+
+    return StreamBuilder<List<ProductVariantModel>>(
+      stream: _variantRepo.watchAll(widget.product.id),
+      builder: (context, snap) {
+        final variants = snap.data ?? const <ProductVariantModel>[];
+        final resolved = _matchVariant(variants);
+        final isLoading = snap.connectionState == ConnectionState.waiting && !snap.hasData;
+
+        // ✅ إبلاغ الشاشة الأب بعد انتهاء هذا الإطار (تفادي استدعاء
+        // setState في شاشة أخرى أثناء بناء هذا الـ widget نفسه).
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) widget.onVariantResolved(resolved);
+        });
+
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final key in widget.product.variantKeys) ...[
+                _buildOptionRow(context, key),
+                const SizedBox(height: 14),
+              ],
+              if (isLoading)
+                Text('جاري تحميل الخيارات...',
+                    style: TextStyle(fontSize: 12, color: colors.textHint))
+              else if (_selected.length == widget.product.variantKeys.length && resolved == null)
+                Row(children: [
+                  Icon(Icons.info_outline, size: 14, color: colors.error),
+                  const SizedBox(width: 6),
+                  Expanded(child: Text('هذه التركيبة غير متوفرة حالياً',
+                      style: TextStyle(fontSize: 12, color: colors.error))),
+                ]),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildOptionRow(BuildContext context, String key) {
+    final colors = context.colors;
+    final values = widget.product.optionSets[key] ?? const [];
+    if (values.isEmpty) return const SizedBox.shrink();
+    final isColor = key == 'color';
+    final selectedId = _selected[key];
+    final selectedLabel = values
+        .where((v) => v.valueId == selectedId)
+        .map((v) => v.label)
+        .toList();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(children: [
+          Text('${attributeDisplayLabel(key)}:',
+              style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+          if (selectedLabel.isNotEmpty) ...[
+            const SizedBox(width: 8),
+            Text(selectedLabel.first, style: TextStyle(fontSize: 13, color: colors.textSecondary)),
+          ],
+        ]),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8, runSpacing: 8,
+          children: values.map((v) {
+            final isSelected = selectedId == v.valueId;
+            return isColor
+                ? _ColorSwatchChip(
+                    value: v, isSelected: isSelected,
+                    onTap: v.isAvailable ? () => _select(key, v.valueId) : null,
+                  )
+                : _TextOptionChip(
+                    value: v, isSelected: isSelected,
+                    onTap: v.isAvailable ? () => _select(key, v.valueId) : null,
+                  );
+          }).toList(),
+        ),
+      ],
+    );
+  }
+}
+
+// ── شريحة اختيار لونية (دائرة بلون الـ hex) ────────────────────────────────
+class _ColorSwatchChip extends StatelessWidget {
+  final ProductOptionValueRef value;
+  final bool isSelected;
+  final VoidCallback? onTap;
+  const _ColorSwatchChip({required this.value, required this.isSelected, this.onTap});
+
+  Color _parseHex(String? hex) {
+    if (hex == null || hex.isEmpty) return Colors.grey;
+    final clean = hex.replaceAll('#', '');
+    final parsed = int.tryParse('FF$clean', radix: 16);
+    return parsed != null ? Color(parsed) : Colors.grey;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final swatchColor = _parseHex(value.hex);
+    final unavailable = !value.isAvailable;
+
+    return Opacity(
+      opacity: unavailable ? 0.35 : 1.0,
+      child: Tooltip(
+        message: unavailable ? '${value.label} (غير متوفر)' : value.label,
+        child: GestureDetector(
+          onTap: onTap,
+          child: Container(
+            width: 40, height: 40,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: swatchColor,
+              border: Border.all(
+                color: isSelected ? colors.primary : colors.border,
+                width: isSelected ? 2.5 : 1,
+              ),
+              boxShadow: isSelected
+                  ? [BoxShadow(color: colors.primary.withValues(alpha: 0.3), blurRadius: 6)]
+                  : null,
+            ),
+            child: unavailable
+                ? const Center(child: Icon(Icons.close_rounded, size: 16, color: Colors.black45))
+                : (isSelected
+                    ? Icon(Icons.check_rounded, size: 18,
+                        color: swatchColor.computeLuminance() > 0.5 ? Colors.black87 : Colors.white)
+                    : null),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── شريحة اختيار نصية (مقاس/رام/تخزين/...) ─────────────────────────────────
+class _TextOptionChip extends StatelessWidget {
+  final ProductOptionValueRef value;
+  final bool isSelected;
+  final VoidCallback? onTap;
+  const _TextOptionChip({required this.value, required this.isSelected, this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final unavailable = !value.isAvailable;
+
+    return Opacity(
+      opacity: unavailable ? 0.4 : 1.0,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 9),
+          decoration: BoxDecoration(
+            color: isSelected ? colors.primary.withValues(alpha: 0.1) : colors.surface,
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(
+              color: isSelected ? colors.primary : colors.border,
+              width: isSelected ? 1.6 : 1,
+            ),
+          ),
+          child: Text(
+            unavailable ? '${value.label} ✕' : value.label,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              color: unavailable
+                  ? colors.textHint
+                  : (isSelected ? colors.primary : colors.textPrimary),
+              decoration: unavailable ? TextDecoration.lineThrough : null,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ✅ اسم عرض عربي موحّد لمفتاح خاصية (يُستخدم في Variant Selector وقسم
+//  المواصفات معاً — مصدر واحد بدل تكرار نفس الخريطة في مكانين).
+// ═══════════════════════════════════════════════════════════════════════════
+String attributeDisplayLabel(String key) {
+  switch (key) {
+    case 'color': return 'اللون';
+    case 'size': return 'المقاس';
+    case 'ram': return 'الرام';
+    case 'storage': return 'التخزين';
+    case 'material': return 'نوع القماش';
+    case 'processor': return 'المعالج';
+    case 'battery': return 'البطارية';
+    default: return key;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ✅ تفكيك أقسام الشاشة — Widgets مستقلة (المرحلة الأخيرة من Universal
+//  Product Engine لهذه الشاشة). كل قسم أصبح الآن Stateless Widget بمعاملات
+//  صريحة، بلا أي وصول مباشر لحالة الشاشة الأب — يسهّل الاختبار وإعادة
+//  الاستخدام (مثال: _QuantitySelector/_PurchaseButtonsRow قابلان للاستخدام
+//  مباشرة في أي شاشة تسوّق أخرى مستقبلاً).
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ── هيدر المعرض (SliverAppBar + زر مشاركة + زر مفضلة + مؤشر صفحات) ────────
+class _ProductGalleryHeader extends StatelessWidget {
+  final ProductModel product;
+  final ProductGalleryController controller;
+  final VoidCallback onSharePressed;
+  final String uid;
+  final bool isGuest;
+  final FavoritesProvider favs;
+  final VoidCallback onRequireLogin;
+
+  const _ProductGalleryHeader({
+    required this.product,
+    required this.controller,
+    required this.onSharePressed,
+    required this.uid,
+    required this.isGuest,
+    required this.favs,
+    required this.onRequireLogin,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return SliverAppBar(
+      expandedHeight: 380, pinned: true, backgroundColor: colors.primary,
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.share_outlined, color: Colors.white),
+          tooltip: 'مشاركة المنتج',
+          onPressed: onSharePressed,
+        ),
+        StreamBuilder<bool>(
+          stream: favs.isFavoriteStream(uid, product.id),
+          builder: (_, snap) {
+            final isFav = snap.data ?? false;
+            return IconButton(
+              icon: Icon(isFav ? Icons.favorite : Icons.favorite_outline,
+                  color: isFav ? Colors.red : Colors.white),
+              onPressed: () {
+                if (isGuest) { onRequireLogin(); return; }
+                favs.toggleFavorite(
+                  uid: uid, productId: product.id,
+                  productName: product.name, productImage: product.firstImage,
+                );
+              },
+            );
+          },
+        ),
+      ],
+      flexibleSpace: FlexibleSpaceBar(
+        // ✅ محرك المعرض الجديد بالكامل — يحل محل PageView اليدوي و
+        // _imgIndex. يعمل تلقائياً مع صورة واحدة (منتج قديم)، أو
+        // فيديو+صور+ألوان+مقاسات (منتج جديد) دون أي فرع خاص هنا.
+        background: GestureDetector(
+          // ✅ أُبقيت خاصية "فتح رابط المنتج بالمتصفح" بالضغط المطوّل
+          // كما كانت (مفيدة لمشاركة/نسخ الرابط). أزلت النقر العادي القديم
+          // لفتح المتصفح لأنه كان يتعارض مع نقرة تشغيل/إيقاف الفيديو.
+          onLongPress: () {
+            final url = 'https://souga-5fdb3.web.app/product/${product.id}';
+            launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+          },
+          child: Stack(children: [
+            ProductGalleryView(controller: controller, height: 380),
+            AnimatedBuilder(
+              animation: controller,
+              builder: (context, _) {
+                final total = controller.gallery.length;
+                if (total <= 1) return const SizedBox.shrink();
+                return Positioned(bottom: 16, left: 0, right: 0,
+                  child: Row(mainAxisAlignment: MainAxisAlignment.center,
+                    children: List.generate(total, (i) => Container(
+                      width: i == controller.currentPage ? 20 : 8, height: 8,
+                      margin: const EdgeInsets.symmetric(horizontal: 3),
+                      decoration: BoxDecoration(
+                        color: i == controller.currentPage ? Colors.white : Colors.white54,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    )),
+                  ),
+                );
+              },
+            ),
+          ]),
+        ),
+      ),
+    );
+  }
+}
+
+// ── شارة "متوفر (كمية) / غير متوفر / اختر الخيارات" ────────────────────────
+class _StockBadge extends StatelessWidget {
+  final bool awaitingSelection;
+  final bool hasStock;
+  final int stock;
+  const _StockBadge({required this.awaitingSelection, required this.hasStock, required this.stock});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    // ✅ لمنتج بمتغيرات: قبل اكتمال الاختيار لا نعرف التوفر بعد، فنعرض
+    // دعوة لاختيار الخيارات بدل "غير متوفر" المُضلِّلة.
+    final label = awaitingSelection
+        ? 'اختر الخيارات لعرض التوفر'
+        : (hasStock ? 'متوفر ($stock)' : 'غير متوفر');
+    final color = awaitingSelection
+        ? colors.textSecondary
+        : (hasStock ? colors.success : colors.error);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+      child: Text(label, style: TextStyle(fontSize: 12, color: color)),
+    );
+  }
+}
+
+// ── صف الإعجاب + الحفظ + المشاركة ───────────────────────────────────────────
+class _LikeShareRow extends StatelessWidget {
+  final ProductModel product;
+  final String uid;
+  final bool isGuest;
+  final FavoritesProvider favs;
+  final VoidCallback onRequireLogin;
+  final VoidCallback onShare;
+
+  const _LikeShareRow({
+    required this.product,
+    required this.uid,
+    required this.isGuest,
+    required this.favs,
+    required this.onRequireLogin,
+    required this.onShare,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Row(children: [
+      StreamBuilder<int>(
+        stream: favs.likesCountStream(product.id),
+        builder: (_, snap) {
+          final count = snap.data ?? 0;
+          return StreamBuilder<bool>(
+            stream: favs.isLikedStream(uid, product.id),
+            builder: (_, likeSnap) {
+              final liked = likeSnap.data ?? false;
+              return GestureDetector(
+                onTap: () {
+                  if (isGuest) { onRequireLogin(); return; }
+                  favs.toggleLike(uid: uid, productId: product.id);
+                },
+                child: Row(children: [
+                  Icon(liked ? Icons.thumb_up : Icons.thumb_up_outlined,
+                      color: liked ? colors.primary : colors.textSecondary, size: 20),
+                  const SizedBox(width: 4),
+                  Text('$count', style: TextStyle(fontSize: 13, color: colors.textSecondary)),
+                ]),
+              );
+            },
+          );
+        },
+      ),
+      const SizedBox(width: 20),
+      StreamBuilder<List<String>>(
+        stream: favs.favoritesStream(uid),
+        builder: (_, snap) {
+          final isFav = (snap.data ?? []).contains(product.id);
+          return GestureDetector(
+            onTap: () {
+              if (isGuest) { onRequireLogin(); return; }
+              favs.toggleFavorite(uid: uid, productId: product.id,
+                  productName: product.name, productImage: product.firstImage);
+            },
+            child: Row(children: [
+              Icon(isFav ? Icons.bookmark : Icons.bookmark_outline,
+                  color: isFav ? colors.accent : colors.textSecondary, size: 20),
+              const SizedBox(width: 4),
+              Text(isFav ? 'محفوظ' : 'حفظ',
+                  style: TextStyle(fontSize: 13, color: colors.textSecondary)),
+            ]),
+          );
+        },
+      ),
+      const Spacer(),
+      GestureDetector(
+        onTap: onShare,
+        child: Row(children: [
+          Icon(Icons.share_outlined, color: colors.textSecondary, size: 20),
+          const SizedBox(width: 4),
+          Text('مشاركة', style: TextStyle(fontSize: 13, color: colors.textSecondary)),
+        ]),
+      ),
+    ]);
+  }
+}
+
+// ── قسم الوصف ────────────────────────────────────────────────────────────────
+class _DescriptionSection extends StatelessWidget {
+  final String description;
+  const _DescriptionSection({required this.description});
+
+  @override
+  Widget build(BuildContext context) {
+    if (description.trim().isEmpty) return const SizedBox.shrink();
+    final colors = context.colors;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('الوصف', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+      const SizedBox(height: 8),
+      Text(description, style: TextStyle(fontSize: 14, color: colors.textSecondary, height: 1.6)),
+    ]);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ✅ جديد — قسم المواصفات (Specifications). شرطي بالكامل حسب
+//  product.attributes (خصائص وصفية isVariant=false من Universal Product
+//  Engine — مثال: الرام، المعالج، البطارية، نوع القماش). منتج قديم/بسيط
+//  بلا attributes (الحالة الافتراضية) لا يُبنى له هذا القسم إطلاقاً —
+//  Fallback كامل، بلا أي تغيير على أي منتج موجود.
+// ═══════════════════════════════════════════════════════════════════════════
+class _SpecificationsSection extends StatelessWidget {
+  final Map<String, String> attributes;
+  const _SpecificationsSection({required this.attributes});
+
+  @override
+  Widget build(BuildContext context) {
+    if (attributes.isEmpty) return const SizedBox.shrink();
+    final colors = context.colors;
+    final entries = attributes.entries.toList();
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('المواصفات', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+      const SizedBox(height: 10),
+      Container(
+        decoration: BoxDecoration(
+          border: Border.all(color: colors.border),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(
+          children: List.generate(entries.length, (i) {
+            final e = entries[i];
+            final isLast = i == entries.length - 1;
+            return Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+              decoration: BoxDecoration(
+                color: i.isEven ? colors.surface : colors.background,
+                borderRadius: BorderRadius.vertical(
+                  top: i == 0 ? const Radius.circular(11) : Radius.zero,
+                  bottom: isLast ? const Radius.circular(11) : Radius.zero,
+                ),
+                border: isLast ? null : Border(bottom: BorderSide(color: colors.divider)),
+              ),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Expanded(
+                  flex: 2,
+                  child: Text(attributeDisplayLabel(e.key),
+                      style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: colors.textPrimary)),
+                ),
+                Expanded(
+                  flex: 3,
+                  child: Text(e.value, style: TextStyle(fontSize: 13, color: colors.textSecondary)),
+                ),
+              ]),
+            );
+          }),
+        ),
+      ),
+    ]);
+  }
+}
+
+// ── عداد الكمية ──────────────────────────────────────────────────────────────
+class _QuantitySelector extends StatelessWidget {
+  final int qty;
+  final int maxStock;
+  final ValueChanged<int> onChanged;
+  const _QuantitySelector({required this.qty, required this.maxStock, required this.onChanged});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Row(children: [
+      const Text('الكمية:', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+      const SizedBox(width: 16),
+      Container(
+        decoration: BoxDecoration(border: Border.all(color: colors.border), borderRadius: BorderRadius.circular(8)),
+        child: Row(children: [
+          IconButton(icon: const Icon(Icons.remove), iconSize: 20,
+              onPressed: qty > 1 ? () => onChanged(qty - 1) : null),
+          Text('$qty', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          IconButton(icon: const Icon(Icons.add), iconSize: 20,
+              onPressed: qty < maxStock ? () => onChanged(qty + 1) : null),
+        ]),
+      ),
+    ]);
+  }
+}
+
+// ── صف زرَي "إضافة للسلة" و"شراء الآن" ──────────────────────────────────────
+class _PurchaseButtonsRow extends StatelessWidget {
+  final bool canPurchase;
+  final bool inCart;
+  final VoidCallback onAddToCart;
+  final VoidCallback onBuyNow;
+  const _PurchaseButtonsRow({
+    required this.canPurchase,
+    required this.inCart,
+    required this.onAddToCart,
+    required this.onBuyNow,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Row(children: [
+      Expanded(child: OutlinedButton.icon(
+        onPressed: canPurchase ? onAddToCart : null,
+        icon: Icon(inCart ? Icons.shopping_cart : Icons.shopping_cart_outlined),
+        label: Text(inCart ? 'في السلة' : 'إضافة للسلة'),
+        style: OutlinedButton.styleFrom(foregroundColor: colors.primary,
+            side: BorderSide(color: colors.primary), minimumSize: const Size(0, 48)),
+      )),
+      const SizedBox(width: 12),
+      Expanded(child: ElevatedButton(
+        onPressed: canPurchase ? onBuyNow : null,
+        style: ElevatedButton.styleFrom(minimumSize: const Size(0, 48)),
+        child: const Text('شراء الآن'),
+      )),
+    ]);
   }
 }

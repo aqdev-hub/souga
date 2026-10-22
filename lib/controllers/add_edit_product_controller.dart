@@ -162,6 +162,7 @@ class AddEditProductController extends ChangeNotifier {
   Future<void> selectCategory(CategoryNode node, {bool resetDependents = true}) async {
     selectedCategory = node;
     if (resetDependents) {
+      customSubcategoryLabel = null; // اختيار فئة رسمية يلغي أي فئة فرعية مقترَحة
       attributeValues.clear();
       hasVariants = false;
       selectedVariantValueIds.clear();
@@ -275,9 +276,33 @@ class AddEditProductController extends ChangeNotifier {
   // categoryId/category الفعليين المبنيين من selectedCategory الحالي).
   String? customSubcategoryLabel;
 
-  void setCustomSubcategory(String label) {
+  /// الجذر الحالي للفئة المختارة (أو null).
+  CategoryNode? get currentRootCategory {
+    var n = selectedCategory;
+    if (n == null) return null;
+    while (n!.parent != null) {
+      n = n.parent;
+    }
+    return n;
+  }
+
+  /// ✅ "+ إضافة فئة فرعية أخرى": الفئة الفرعية التي كتبها البائع (مثل
+  /// "سماعات") **تحلّ محل** الفئة الفرعية الرسمية — يصير المنتج:
+  /// الرئيسية = إلكترونيات، الفرعية = سماعات. (وليس إلكترونيات > هواتف > سماعات).
+  /// تُعتمَد الفئة الجذرية فعلياً (categoryId/category) وتُحفَظ التسمية في
+  /// customSubcategory، وتُستخدَم خصائص الجذر.
+  Future<void> setCustomSubcategory(String label) async {
     final trimmed = label.trim();
-    customSubcategoryLabel = trimmed.isEmpty ? null : trimmed;
+    if (trimmed.isEmpty) {
+      clearCustomSubcategory();
+      return;
+    }
+    final root = currentRootCategory;
+    if (root == null) return;
+    if (selectedCategory != root) {
+      await selectCategory(root); // يصفّر customSubcategoryLabel والقيم المعتمدة على الفئة
+    }
+    customSubcategoryLabel = trimmed;
     notifyListeners();
   }
 
@@ -286,12 +311,12 @@ class AddEditProductController extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// اسم الفئة المعروض في شريط الفئة/التصفح: الفئة المختارة فعلياً، مع
-  /// إلحاق اقتراح البائع (إن وُجد) كملاحظة إضافية — لا يستبدلها أبداً.
+  /// الفئة الفرعية بصيغة العرض: المخصَّصة إن وُجدت، وإلا الرسمية.
   String subcategoryDisplayName(CategoryNode? node) {
-    final base = node?.category.name ?? '';
-    if (customSubcategoryLabel == null || customSubcategoryLabel!.isEmpty) return base;
-    return base.isEmpty ? customSubcategoryLabel! : '$base ($customSubcategoryLabel — مقترَحة)';
+    if (customSubcategoryLabel != null && customSubcategoryLabel!.isNotEmpty) {
+      return customSubcategoryLabel!;
+    }
+    return node?.category.name ?? '';
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -321,30 +346,58 @@ class AddEditProductController extends ChangeNotifier {
   bool isEnhancingDescription = false;
   String? descriptionEnhanceError;
 
+  /// يقصّ النص عند آخر نهاية جملة قبل [max] حرفاً (شبكة أمان: التحسين
+  /// التسويقي يجب أن يبقى مختصراً حتى لو أطال النموذج).
+  static String _capLength(String text, int max) {
+    final t = text.trim();
+    if (t.length <= max) return t;
+    final cut = t.substring(0, max);
+    final end = [cut.lastIndexOf('.'), cut.lastIndexOf('!'), cut.lastIndexOf('؟'), cut.lastIndexOf('\n')]
+        .reduce((x, y) => x > y ? x : y);
+    return (end > max ~/ 2 ? cut.substring(0, end + 1) : cut).trim();
+  }
+
+  /// ✅ يحسّن الوصف المختصر والتفصيلي معاً (كل حقل بطول ≥ 5 أحرف) بأسلوب
+  /// تسويقي موجز. الحقل الذي يفشل تحسينه يبقى كما كتبه البائع.
   Future<void> enhanceDescription({required String category, required String priceText}) async {
     if (isEnhancingDescription) return;
-    final rawText = descCtrl.text.trim();
-    if (rawText.length < 10) return;
+    final shortRaw = shortDescCtrl.text.trim();
+    final longRaw = descCtrl.text.trim();
+    if (shortRaw.length < 5 && longRaw.length < 5) return;
 
     isEnhancingDescription = true;
+    descriptionEnhanceError = null;
     notifyListeners();
 
-    final result = await AiAssistantService.enhanceDescription(
-      productName: nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : 'منتج',
-      category: category,
-      rawDescription: rawText,
-      price: priceText,
-      currencySymbol: selectedCurrency.symbol,
-    );
-
-    isEnhancingDescription = false;
-    if (result.isSuccess) {
-      descriptionEnhanceError = null;
-      descCtrl.text = result.enhanced!;
-      descCtrl.selection = TextSelection.fromPosition(TextPosition(offset: descCtrl.text.length));
-    } else {
-      descriptionEnhanceError = result.errorMessage ?? 'تعذّر تحسين الوصف';
+    final name = nameCtrl.text.trim().isNotEmpty ? nameCtrl.text.trim() : 'منتج';
+    Future<String?> run(String raw, {required bool isShort}) async {
+      final r = await AiAssistantService.enhanceDescription(
+        mode: isShort ? 'short' : 'long',
+        maxChars: isShort ? 110 : 380,
+        productName: name,
+        category: category,
+        rawDescription: raw,
+        price: priceText,
+        currencySymbol: selectedCurrency.symbol,
+      );
+      if (r.isSuccess) return r.enhanced;
+      descriptionEnhanceError = r.errorMessage ?? 'تعذّر تحسين الوصف';
+      return null;
     }
+
+    final results = await Future.wait<String?>([
+      shortRaw.length >= 5 ? run(shortRaw, isShort: true) : Future.value(null),
+      longRaw.length >= 5 ? run(longRaw, isShort: false) : Future.value(null),
+    ]);
+
+    if (results[0] != null) shortDescCtrl.text = _capLength(results[0]!, 110);
+    if (results[1] != null) {
+      descCtrl.text = _capLength(results[1]!, 380);
+      descCtrl.selection = TextSelection.fromPosition(TextPosition(offset: descCtrl.text.length));
+    }
+    // نجاح جزئي كافٍ: لا نعرض خطأ إن تحسّن أحد الحقلين على الأقل.
+    if (results[0] != null || results[1] != null) descriptionEnhanceError = null;
+    isEnhancingDescription = false;
     notifyListeners();
   }
 
@@ -517,6 +570,19 @@ class AddEditProductController extends ChangeNotifier {
     variantDrafts = newDrafts;
   }
 
+  double _lastBasePrice = 0;
+
+  /// عند تغيير "السعر الأساسي": الخيارات التي لم يعدّل البائع سعرها يدوياً
+  /// (صفر أو تساوي السعر الأساسي السابق) تتبع السعر الجديد تلقائياً.
+  void onBasePriceChanged() {
+    final base = double.tryParse(priceCtrl.text.trim()) ?? 0;
+    for (final d in variantDrafts) {
+      if (d.price == 0 || d.price == _lastBasePrice) d.price = base;
+    }
+    _lastBasePrice = base;
+    notifyListeners();
+  }
+
   void updateDraftPrice(int index, double price) {
     if (index < 0 || index >= variantDrafts.length) return;
     variantDrafts[index].price = price;
@@ -547,6 +613,20 @@ class AddEditProductController extends ChangeNotifier {
   // ═══════════════════════════════════════════════════════════════════
   //  الخطوة 5 — المعرض والمراجعة
   // ═══════════════════════════════════════════════════════════════════
+  // ✅ حالة رفع الفيديو (الرفع الفعلي في الشاشة عبر ImageKitService.uploadVideo)
+  bool uploadingVideo = false;
+  double videoUploadProgress = 0;
+  void setVideoUploadState({required bool uploading, double progress = 0}) {
+    uploadingVideo = uploading;
+    videoUploadProgress = progress;
+    notifyListeners();
+  }
+  void setVideoUrl(String url) {
+    videoUrlCtrl.text = url;
+    notifyListeners();
+  }
+  void clearVideo() => setVideoUrl('');
+
   late TextEditingController videoUrlCtrl; // ⚠️ لا يوجد رفع فيديو فعلي بعد
   // (ImageKitService يدعم رفع صور فقط) — حقل نصي لرابط جاهز مؤقتاً، راجع
   // ملاحظة النطاق في HANDOFF.
@@ -639,22 +719,25 @@ class AddEditProductController extends ChangeNotifier {
     switch (stepId) {
       case stepCategory:
         if (selectedCategory == null) return 'اختر فئة المنتج أولاً';
-        if (!selectedCategory!.isLeaf) return 'اختر فئة فرعية نهائية (بلا أبناء)';
+        if (!selectedCategory!.isLeaf && customSubcategoryLabel == null) return 'اختر فئة فرعية، أو أضف فئة فرعية أخرى';
         return null;
       case stepBasicInfo:
         if (nameCtrl.text.trim().isEmpty) return 'اسم المنتج مطلوب';
         if (shortDescCtrl.text.trim().isEmpty) return 'الوصف المختصر مطلوب';
         if (descCtrl.text.trim().isEmpty) return 'الوصف التفصيلي مطلوب';
-        final price = double.tryParse(priceCtrl.text.trim());
-        if (price == null || price <= 0) return 'السعر غير صحيح';
-        if (!hasVariants) {
-          final stock = int.tryParse(stockCtrl.text.trim());
-          if (stock == null || stock < 0) return 'الكمية غير صحيحة';
-        }
         return null;
       case stepVariantSelection:
         if (hasVariants && selectedVariantValueIds.isEmpty) {
           return 'اختر قيمة واحدة على الأقل لكل خاصية متغيّرة، أو أوقف تفعيل المتغيرات';
+        }
+        // ✅ السعر والكمية صارا في خطوة الخصائص (نُقلا من المعلومات الأساسية).
+        if (hasVariants && variantDrafts.isNotEmpty) {
+          if (variantDrafts.any((d) => d.price <= 0)) return 'حدّد سعراً أكبر من صفر لكل خيار';
+        } else {
+          final price = double.tryParse(priceCtrl.text.trim());
+          if (price == null || price <= 0) return 'السعر غير صحيح';
+          final stock = int.tryParse(stockCtrl.text.trim());
+          if (stock == null || stock < 0) return 'الكمية غير صحيحة';
         }
         return null;
       case stepVariantCombinations:
@@ -769,7 +852,11 @@ class AddEditProductController extends ChangeNotifier {
       final gallery = _buildGallery();
       final optionSets = _buildOptionSets(gallery);
       final effectiveHasVariants = hasVariants && variantDrafts.isNotEmpty;
-      final price = double.parse(priceCtrl.text.trim());
+      // السعر المعروض في القوائم: أقل سعر بين الخيارات النشطة (أو السعر الأساسي).
+      final activePrices = variantDrafts.where((d) => d.isActive && d.price > 0).map((d) => d.price);
+      final price = (effectiveHasVariants && activePrices.isNotEmpty)
+          ? activePrices.reduce((a, b) => a < b ? a : b)
+          : double.parse(priceCtrl.text.trim());
       final rawOriginal = double.tryParse(originalPriceCtrl.text.trim());
 
       final product = ProductModel(

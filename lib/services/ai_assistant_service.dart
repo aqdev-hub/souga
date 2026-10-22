@@ -39,6 +39,11 @@ class AiAssistantService {
     String price = '',
     String currencySymbol = '',
     int maxRetries = 2,
+    // ✅ جديدان واختياريان (لا يؤثران على أي استدعاء قديم): نوع الحقل
+    // 'long' (افتراضي، السلوك القديم) أو 'short' للوصف المختصر، وحد أقصى
+    // لطول النص بالأحرف. يُرسَلان للخادم فقط عند تحديدهما.
+    String mode = 'long',
+    int? maxChars,
   }) async {
     Exception? lastErr;
 
@@ -54,6 +59,8 @@ class AiAssistantService {
             'rawDescription': rawDescription,
             'price':          price,
             'currencySymbol': currencySymbol,
+            if (mode != 'long') 'mode': mode,
+            if (maxChars != null) 'maxChars': maxChars,
           }),
         ).timeout(const Duration(seconds: 55));
 

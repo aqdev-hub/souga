@@ -96,6 +96,32 @@ class _ProductFormStepperScreenState extends State<ProductFormStepperScreen> {
     }
   }
 
+  /// ✅ اختيار فيديو (معرض أو كاميرا) ورفعه فعلياً، ثم حفظ رابطه في المنتج.
+  Future<void> _pickAndUploadVideo({required bool fromCamera}) async {
+    final colors = context.colors;
+    final file = await ImageKitService.pickVideo(fromCamera: fromCamera);
+    if (file == null || !mounted) return;
+    _controller.setVideoUploadState(uploading: true, progress: 0);
+    String? errorMsg;
+    final url = await ImageKitService.uploadVideo(
+      file,
+      onProgress: (p) {
+        if (mounted) _controller.setVideoUploadState(uploading: true, progress: p);
+      },
+      onError: (m) => errorMsg = m,
+    );
+    if (!mounted) return;
+    _controller.setVideoUploadState(uploading: false);
+    if (url != null) {
+      _controller.setVideoUrl(url);
+    } else {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('❌ ${errorMsg ?? 'فشل رفع الفيديو'}'),
+        backgroundColor: colors.error,
+      ));
+    }
+  }
+
   /// ✅ يُحوِّل الخطوة المرئية الحالية إلى معرّفات خطوات البيانات المطلوب
   /// التحقق منها قبل الانتقال — راجع الشرح أعلى الملف لخريطة التجميع.
   List<int> _dataStepsFor(int visualStep) {
@@ -228,7 +254,11 @@ class _ProductFormStepperScreenState extends State<ProductFormStepperScreen> {
       case 1:
         return _AttributesStep(controller: _controller);
       case 2:
-        return _GalleryStep(controller: _controller, onPickImage: _pickAndUpload);
+        return _GalleryStep(
+          controller: _controller,
+          onPickImage: _pickAndUpload,
+          onPickVideo: (fromCamera) => _pickAndUploadVideo(fromCamera: fromCamera),
+        );
       default:
         return _ReviewStep(controller: _controller);
     }
@@ -467,21 +497,25 @@ class _BasicInfoStepState extends State<_BasicInfoStep> {
   void initState() {
     super.initState();
     controller.descCtrl.addListener(_onDescriptionChanged);
+    controller.shortDescCtrl.addListener(_onDescriptionChanged);
   }
 
   @override
   void dispose() {
     _descDebounceTimer?.cancel();
     controller.descCtrl.removeListener(_onDescriptionChanged);
+    controller.shortDescCtrl.removeListener(_onDescriptionChanged);
     super.dispose();
   }
 
   void _onDescriptionChanged() {
     _descDebounceTimer?.cancel();
     if (_showEnhanceButton) setState(() => _showEnhanceButton = false);
-    final text = controller.descCtrl.text.trim();
-    if (text.length < 10) return;
-    _descDebounceTimer = Timer(const Duration(seconds: 2), () {
+    // ✅ يظهر الزر بسرعة (نصف ثانية بعد التوقف) ما إن يكتب البائع 5 أحرف
+    // أو أكثر في الوصف المختصر أو التفصيلي — ويحسّن الحقلين معاً.
+    if (controller.descCtrl.text.trim().length < 5 &&
+        controller.shortDescCtrl.text.trim().length < 5) { return; }
+    _descDebounceTimer = Timer(const Duration(milliseconds: 500), () {
       if (mounted) setState(() => _showEnhanceButton = true);
     });
   }
@@ -496,7 +530,7 @@ class _BasicInfoStepState extends State<_BasicInfoStep> {
     if (controller.descriptionEnhanceError == null) {
       setState(() => _showEnhanceButton = false);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-        content: const Text('✨ تم تحسين الوصف بالذكاء الاصطناعي'),
+        content: const Text('✨ تم تحسين الوصف المختصر والتفصيلي'),
         backgroundColor: colors.success,
         duration: const Duration(seconds: 2),
       ));
@@ -508,30 +542,6 @@ class _BasicInfoStepState extends State<_BasicInfoStep> {
     }
   }
 
-  void _showCurrencyPicker(BuildContext context) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (ctx) => SafeArea(
-        child: SizedBox(
-          height: 420,
-          child: ListView.builder(
-            itemCount: kSougaCurrencies.length,
-            itemBuilder: (_, i) {
-              final c = kSougaCurrencies[i];
-              return ListTile(
-                leading: Text(c.symbol, style: const TextStyle(fontSize: 16)),
-                title: Text(c.name),
-                subtitle: Text(c.code),
-                onTap: () { controller.setCurrency(c); Navigator.pop(ctx); },
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
-
   // ✅ جديد — "+ إضافة فئة فرعية أخرى": يفتح حواراً لإدخال اسم فئة فرعية
   // مقترَحة غير موجودة رسمياً بعد (نصّي بحت، لا يُنشئ فئة حقيقية).
   void _showAddCustomSubcategoryDialog(BuildContext context) {
@@ -539,18 +549,19 @@ class _BasicInfoStepState extends State<_BasicInfoStep> {
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: const Text('إضافة فئة فرعية أخرى'),
+        title: Text('فئة فرعية أخرى ضمن ${controller.currentRootCategory?.category.name ?? ''}'),
         content: TextField(
           controller: textCtrl,
           autofocus: true,
-          decoration: const InputDecoration(hintText: 'مثال: إكسسوارات هواتف مطوية'),
+          decoration: const InputDecoration(hintText: 'مثال: سماعات'),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
           ElevatedButton(
-            onPressed: () {
-              controller.setCustomSubcategory(textCtrl.text);
-              Navigator.pop(ctx);
+            onPressed: () async {
+              final nav = Navigator.of(ctx);
+              await controller.setCustomSubcategory(textCtrl.text);
+              nav.pop();
             },
             child: const Text('إضافة'),
           ),
@@ -645,7 +656,7 @@ class _BasicInfoStepState extends State<_BasicInfoStep> {
                         child: CircularProgressIndicator(strokeWidth: 2, color: colors.primary))
                     : Icon(Icons.auto_awesome, size: 16, color: colors.primary),
                 label: Text(
-                  controller.isEnhancingDescription ? 'جاري التحسين...' : 'حسّن الوصف بالذكاء الاصطناعي',
+                  controller.isEnhancingDescription ? 'جاري التحسين...' : 'حسّن الوصفين بالذكاء الاصطناعي',
                   style: TextStyle(color: colors.primary, fontSize: 12.5),
                 ),
               ),
@@ -692,23 +703,78 @@ class _BasicInfoStepState extends State<_BasicInfoStep> {
               ]),
             ),
           ),
+
+          const SizedBox(height: 16),
+          const SizedBox(height: 4),
+          Text('حالة المنتج', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: colors.textPrimary)),
+          const SizedBox(height: 8),
+          Row(children: [
+            Expanded(child: _ConditionChip(
+              label: 'جديد', selected: controller.condition == 'new',
+              onTap: () => controller.setCondition('new'),
+            )),
+            const SizedBox(width: 10),
+            Expanded(child: _ConditionChip(
+              label: 'مستعمل', selected: controller.condition == 'used',
+              onTap: () => controller.setCondition('used'),
+            )),
+          ]),
         ]),
       ),
+    ]);
+  }
+}
 
-      // ── السعر والمخزون ──────────────────────────────────────────────
-      _SectionCard(
-        title: 'السعر والمخزون',
-        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+/// اختيار العملة — دالة مشتركة (كانت داخل خطوة المعلومات الأساسية).
+void _showCurrencyPickerSheet(BuildContext context, AddEditProductController controller) {
+  showModalBottomSheet(
+    context: context,
+    isScrollControlled: true,
+    builder: (ctx) => SafeArea(
+      child: SizedBox(
+        height: 420,
+        child: ListView.builder(
+          itemCount: kSougaCurrencies.length,
+          itemBuilder: (_, i) {
+            final c = kSougaCurrencies[i];
+            return ListTile(
+              leading: Text(c.symbol, style: const TextStyle(fontSize: 16)),
+              title: Text(c.name),
+              subtitle: Text(c.code),
+              onTap: () { controller.setCurrency(c); Navigator.pop(ctx); },
+            );
+          },
+        ),
+      ),
+    ),
+  );
+}
+
+/// ✅ بطاقة السعر والمخزون — نُقلت من خطوة "المعلومات الأساسية" إلى خطوة
+/// "الخصائص" لأن السعر يتبع الخيارات: بلا خيارات = سعر واحد وكمية واحدة،
+/// ومع خيارات (لون/مقاس...) يُحدَّد سعر وكمية لكل خيار في الأسفل.
+class _PricingStockCard extends StatelessWidget {
+  final AddEditProductController controller;
+  const _PricingStockCard({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final hasVariants = controller.hasVariants && controller.variantDrafts.isNotEmpty;
+    return _SectionCard(
+      title: 'السعر والمخزون',
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Row(children: [
             Expanded(
               flex: 3,
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                _requiredLabel(context, 'السعر'),
+                _requiredLabel(context, hasVariants ? 'السعر الأساسي' : 'السعر'),
                 const SizedBox(height: 6),
                 TextField(
                   controller: controller.priceCtrl,
                   keyboardType: const TextInputType.numberWithOptions(decimal: true),
                   textDirection: TextDirection.ltr,
+                  onChanged: (_) => controller.onBasePriceChanged(),
                   decoration: const InputDecoration(isDense: true),
                 ),
               ]),
@@ -720,7 +786,7 @@ class _BasicInfoStepState extends State<_BasicInfoStep> {
                 const Text('العملة', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 6),
                 GestureDetector(
-                  onTap: () => _showCurrencyPicker(context),
+                  onTap: () => _showCurrencyPickerSheet(context, controller),
                   child: Container(
                     height: 48,
                     padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -764,28 +830,12 @@ class _BasicInfoStepState extends State<_BasicInfoStep> {
               child: Row(children: [
                 Icon(Icons.info_outline, size: 15, color: colors.primary),
                 const SizedBox(width: 6),
-                Expanded(child: Text('الكمية تُحدَّد لكل خيار (لون/مقاس) في خطوة الخصائص',
+                Expanded(child: Text('الكمية والسعر يُحدَّدان لكل خيار في القسم أدناه',
                     style: TextStyle(fontSize: 11.5, color: colors.primary))),
               ]),
             ),
-
-          const SizedBox(height: 4),
-          Text('حالة المنتج', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: colors.textPrimary)),
-          const SizedBox(height: 8),
-          Row(children: [
-            Expanded(child: _ConditionChip(
-              label: 'جديد', selected: controller.condition == 'new',
-              onTap: () => controller.setCondition('new'),
-            )),
-            const SizedBox(width: 10),
-            Expanded(child: _ConditionChip(
-              label: 'مستعمل', selected: controller.condition == 'used',
-              onTap: () => controller.setCondition('used'),
-            )),
-          ]),
-        ]),
-      ),
-    ]);
+      ]),
+    );
   }
 }
 
@@ -884,7 +934,8 @@ class _CategorySubDropdown extends StatelessWidget {
         child: DropdownButton<String>(
           isExpanded: true,
           value: subOptions.any((s) => s.category.id == selected?.category.id) ? selected?.category.id : null,
-          hint: const Text('اختر الفئة الفرعية'),
+          hint: Text(controller.customSubcategoryLabel ?? 'اختر الفئة الفرعية',
+              style: controller.customSubcategoryLabel != null ? TextStyle(color: colors.primary, fontWeight: FontWeight.bold) : null),
           items: subOptions.map((s) => DropdownMenuItem(value: s.category.id, child: Text(s.category.name))).toList(),
           onChanged: (id) {
             if (id == null) return;
@@ -909,7 +960,6 @@ class _AttributesStep extends StatefulWidget {
 }
 
 class _AttributesStepState extends State<_AttributesStep> {
-  bool _advancedOpen = false;
   final _customLabelCtrl = TextEditingController();
   final _brandSearchCtrl = TextEditingController();
   final _brandManualCtrl = TextEditingController();
@@ -1251,25 +1301,18 @@ class _AttributesStepState extends State<_AttributesStep> {
         ]),
       ),
 
-      // ── خيارات متقدمة: سعر ومخزون مستقل لكل تركيبة (اختياري، مخفي افتراضياً) ──
+      // ── السعر والمخزون (نُقل من خطوة المعلومات الأساسية) ──
+      _PricingStockCard(controller: controller),
+
+      // ── سعر وكمية كل خيار: ظاهر دائماً عند وجود خيارات (لون/مقاس...) ──
       if (controller.hasVariants && controller.variantDrafts.isNotEmpty)
         _SectionCard(
-          title: 'خيارات متقدمة',
+          title: 'سعر وكمية كل خيار',
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            InkWell(
-              onTap: () => setState(() => _advancedOpen = !_advancedOpen),
-              child: Row(children: [
-                Icon(Icons.tune_rounded, size: 18, color: colors.primary),
-                const SizedBox(width: 8),
-                Expanded(child: Text('تخصيص السعر والمخزون لكل خيار على حدة',
-                    style: TextStyle(fontSize: 13, color: colors.textPrimary))),
-                Icon(_advancedOpen ? Icons.expand_less : Icons.expand_more, color: colors.textSecondary),
-              ]),
-            ),
-            if (_advancedOpen) ...[
-              const SizedBox(height: 12),
-              _VariantCombinationsEditor(controller: controller),
-            ],
+            Text('حدّد السعر والكمية المناسبين لكل خيار — الخيار بكمية صفر يظهر للمشتري "نفد المخزون"',
+                style: TextStyle(fontSize: 11.5, color: colors.textSecondary)),
+            const SizedBox(height: 12),
+            _VariantCombinationsEditor(controller: controller),
           ]),
         ),
     ]);
@@ -1412,6 +1455,7 @@ class _VariantCombinationsEditorState extends State<_VariantCombinationsEditor> 
       ...List.generate(drafts.length, (i) {
         final d = drafts[i];
         return Container(
+          key: ValueKey(d.optionValues.entries.map((e) => '${e.key}=${e.value}').join('|')),
           margin: const EdgeInsets.only(bottom: 10),
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(border: Border.all(color: colors.border), borderRadius: BorderRadius.circular(10)),
@@ -1450,7 +1494,8 @@ class _VariantCombinationsEditorState extends State<_VariantCombinationsEditor> 
 class _GalleryStep extends StatelessWidget {
   final AddEditProductController controller;
   final Future<void> Function(void Function(String url) onUploaded) onPickImage;
-  const _GalleryStep({required this.controller, required this.onPickImage});
+  final Future<void> Function(bool fromCamera) onPickVideo;
+  const _GalleryStep({required this.controller, required this.onPickImage, required this.onPickVideo});
 
   void _showVideoLinkDialog(BuildContext context, AddEditProductController controller) {
     final ctrl = TextEditingController(text: controller.videoUrlCtrl.text);
@@ -1572,36 +1617,87 @@ class _GalleryStep extends StatelessWidget {
       _SectionCard(
         title: 'فيديو المنتج (اختياري)',
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('أضف فيديو قصير للمنتج لزيادة ثقة المشترين',
+          Text('أضف فيديو قصير (حتى 30 ثانية و25MB) لزيادة ثقة المشترين',
               style: TextStyle(fontSize: 11.5, color: colors.textSecondary)),
           const SizedBox(height: 12),
-          GestureDetector(
-            onTap: () => _showVideoLinkDialog(context, controller),
-            child: Container(
+          if (controller.uploadingVideo)
+            Container(
               width: double.infinity,
-              padding: const EdgeInsets.symmetric(vertical: 22),
+              padding: const EdgeInsets.all(18),
               decoration: BoxDecoration(
                 color: colors.background,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: colors.border),
               ),
               child: Column(children: [
-                Icon(
-                  controller.videoUrlCtrl.text.trim().isEmpty ? Icons.videocam_outlined : Icons.check_circle,
-                  color: controller.videoUrlCtrl.text.trim().isEmpty ? colors.textHint : colors.success,
-                  size: 26,
+                LinearProgressIndicator(
+                  value: controller.videoUploadProgress.clamp(0.0, 1.0),
+                  minHeight: 6,
+                  borderRadius: BorderRadius.circular(3),
                 ),
-                const SizedBox(height: 6),
-                Text(
-                  controller.videoUrlCtrl.text.trim().isEmpty ? 'إضافة فيديو' : 'تم إضافة رابط الفيديو — اضغط للتغيير',
-                  style: TextStyle(fontSize: 11.5, color: colors.textHint),
+                const SizedBox(height: 10),
+                Text('جاري رفع الفيديو... ${(controller.videoUploadProgress * 100).round()}%',
+                    style: TextStyle(fontSize: 12, color: colors.textSecondary)),
+              ]),
+            )
+          else if (controller.videoUrlCtrl.text.trim().isNotEmpty)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: colors.background,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: colors.success),
+              ),
+              child: Row(children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: SizedBox(
+                    width: 64, height: 64,
+                    child: Stack(alignment: Alignment.center, children: [
+                      Container(color: colors.border),
+                      if (ImageKitService.videoThumbnailUrl(controller.videoUrlCtrl.text.trim()).isNotEmpty)
+                        Image.network(
+                          ImageKitService.videoThumbnailUrl(controller.videoUrlCtrl.text.trim()),
+                          width: 64, height: 64, fit: BoxFit.cover,
+                          errorBuilder: (_, __, ___) => const SizedBox.shrink(),
+                        ),
+                      const Icon(Icons.play_circle_fill, color: Colors.white, size: 28),
+                    ]),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(child: Text('تم إضافة الفيديو', style: TextStyle(fontSize: 13, color: colors.success, fontWeight: FontWeight.w600))),
+                IconButton(
+                  tooltip: 'حذف الفيديو',
+                  onPressed: controller.clearVideo,
+                  icon: Icon(Icons.delete_outline, color: colors.error),
                 ),
               ]),
+            )
+          else
+            Row(children: [
+              Expanded(child: OutlinedButton.icon(
+                onPressed: () => onPickVideo(false),
+                icon: const Icon(Icons.video_library_outlined, size: 18),
+                label: const Text('من المعرض'),
+              )),
+              const SizedBox(width: 10),
+              Expanded(child: OutlinedButton.icon(
+                onPressed: () => onPickVideo(true),
+                icon: const Icon(Icons.videocam_outlined, size: 18),
+                label: const Text('تسجيل فيديو'),
+              )),
+            ]),
+          const SizedBox(height: 8),
+          if (!controller.uploadingVideo)
+            TextButton(
+              onPressed: () => _showVideoLinkDialog(context, controller),
+              child: Text(
+                controller.videoUrlCtrl.text.trim().isEmpty ? 'أو الصق رابط فيديو جاهز' : 'تغيير الرابط',
+                style: const TextStyle(fontSize: 12),
+              ),
             ),
-          ),
-          const SizedBox(height: 6),
-          Text('⚠️ رفع الفيديو مباشرة غير مدعوم بعد — يُضاف كرابط جاهز فقط',
-              style: TextStyle(fontSize: 10.5, color: colors.textHint)),
         ]),
       ),
 
@@ -1799,13 +1895,11 @@ class _ReviewStep extends StatelessWidget {
       parts.insert(0, n.category.name);
       n = n.parent;
     }
-    var path = parts.join(' > ');
-    // ✅ اقتراح فئة فرعية غير رسمية: يُلحَق للعرض فقط، لا يستبدل الفئة
-    // الفعلية أبداً — بدون هذا كان سيختفي بصمت من صفحة المراجعة.
+    // ✅ فئة فرعية كتبها البائع تحلّ محل الفرعية الرسمية: الرئيسية > المخصَّصة.
     if (customSubcategory != null && customSubcategory.isNotEmpty) {
-      path = '$path ($customSubcategory — مقترَحة)';
+      return '${parts.first} > $customSubcategory';
     }
-    return path;
+    return parts.join(' > ');
   }
 }
 

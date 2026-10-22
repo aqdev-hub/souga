@@ -42,6 +42,27 @@ class ImageKitService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
+  //  ✅ جديد — اختيار فيديو قصير (من المعرض أو بتسجيل جديد بالكاميرا)
+  //  المدة القصوى تُطبَّق عند التسجيل بالكاميرا؛ الاختيار من المعرض يُتحقَّق
+  //  من حجمه فقط في uploadVideo (انظر maxVideoBytes).
+  // ─────────────────────────────────────────────────────────────────────────────
+  static const int maxVideoBytes = 25 * 1024 * 1024; // 25MB
+  static const Duration maxVideoDuration = Duration(seconds: 30);
+
+  static Future<File?> pickVideo({bool fromCamera = false}) async {
+    try {
+      final XFile? xFile = await ImagePicker().pickVideo(
+        source:      fromCamera ? ImageSource.camera : ImageSource.gallery,
+        maxDuration: maxVideoDuration,
+      );
+      if (xFile != null) return File(xFile.path);
+    } catch (e) {
+      debugPrint('[ImageKit] pickVideo error: $e');
+    }
+    return null;
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────────
   //  جلب بيانات التوقيع من خادم Render
   //
   //  خادم Render Free يدخل في سُبات بعد 15 دقيقة من عدم الاستخدام.
@@ -219,6 +240,104 @@ class ImageKitService {
     debugPrint('[ImageKit] ❌ All $maxRetries attempts failed');
     return null; // فشل الرفع — لا يمنع التسجيل
   }
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  //  ✅ جديد — رفع فيديو. نفس آلية التوقيع والمحاولات لـ uploadImage، لكن:
+  //   • الملف يُرسَل من القرص مباشرة (fromPath) بدل تحميله كله في الذاكرة.
+  //   • مهلة أطول (5 دقائق). التقدم محاكى (حزمة http لا تعطي تقدماً حقيقياً).
+  //   • يُرفض أي ملف أكبر من maxVideoBytes برسالة خطأ في [onError].
+  //  يُعيد رابط الفيديو أو null عند الفشل.
+  // ─────────────────────────────────────────────────────────────────────────────
+  static Future<String?> uploadVideo(
+    File videoFile, {
+    String folder = 'product_videos',
+    void Function(double progress)? onProgress,
+    void Function(String message)? onError,
+    int maxRetries = 2,
+  }) async {
+    final size = await videoFile.length();
+    if (size > maxVideoBytes) {
+      onError?.call('حجم الفيديو ${(size / 1048576).toStringAsFixed(1)}MB يتجاوز الحد '
+          '${maxVideoBytes ~/ 1048576}MB. اختر فيديو أقصر أو بجودة أقل.');
+      return null;
+    }
+
+    double highWater = 0.0;
+    void report(double p) {
+      final clamped = p.clamp(0.0, 1.0);
+      if (clamped > highWater) {
+        highWater = clamped;
+        onProgress?.call(highWater);
+      }
+    }
+
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+      Timer? progressTimer;
+      try {
+        report(0.02);
+        final auth = await _getAuth();
+        if (auth == null) {
+          if (attempt < maxRetries) await Future.delayed(Duration(seconds: attempt * 3));
+          continue;
+        }
+        report(0.08);
+
+        final fileName = '${folder}_${_uuid.v4()}';
+        final request = http.MultipartRequest('POST', Uri.parse(_uploadUrl));
+        request.fields['fileName']          = fileName;
+        request.fields['folder']            = '/$folder';
+        request.fields['token']             = auth['token']!;
+        request.fields['expire']            = auth['expire']!;
+        request.fields['signature']         = auth['signature']!;
+        request.fields['publicKey']         = auth['publicKey']!;
+        request.fields['useUniqueFileName'] = 'true';
+        request.files.add(await http.MultipartFile.fromPath(
+          'file', videoFile.path, filename: '$fileName.mp4',
+        ));
+        report(0.12);
+
+        var sim = 0.12;
+        progressTimer = Timer.periodic(const Duration(milliseconds: 700), (t) {
+          if (sim < 0.90) {
+            sim += 0.015;
+            report(sim);
+          } else {
+            t.cancel();
+          }
+        });
+
+        final streamed = await request.send().timeout(const Duration(minutes: 5));
+        final response = await http.Response.fromStream(streamed);
+        progressTimer.cancel();
+        progressTimer = null;
+        debugPrint('[ImageKit] video HTTP ${response.statusCode}');
+
+        if (response.statusCode == 200) {
+          final data = jsonDecode(response.body) as Map<String, dynamic>;
+          final url  = data['url']?.toString() ?? '';
+          if (url.isNotEmpty) {
+            report(1.0);
+            return url;
+          }
+        } else if (response.statusCode == 413) {
+          onError?.call('حجم الفيديو يتجاوز الحد المسموح في حساب الاستضافة.');
+          return null;
+        }
+        if (attempt < maxRetries) await Future.delayed(Duration(seconds: attempt * 3));
+      } catch (e) {
+        progressTimer?.cancel();
+        debugPrint('[ImageKit] ❌ video exception attempt $attempt: $e');
+        if (attempt < maxRetries) await Future.delayed(Duration(seconds: attempt * 3));
+      }
+    }
+    onProgress?.call(0.0);
+    onError?.call('فشل رفع الفيديو. تحقق من الاتصال وأعد المحاولة.');
+    return null;
+  }
+
+  /// صورة مصغّرة تولّدها ImageKit تلقائياً من رابط الفيديو.
+  static String videoThumbnailUrl(String videoUrl) =>
+      isImageKitUrl(videoUrl) ? '${videoUrl.split('?').first}/ik-thumbnail.jpg' : '';
 
   // ─────────────────────────────────────────────────────────────────────────────
   //  تحويلات CDN

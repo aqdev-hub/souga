@@ -1,11 +1,33 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
-<uses-permission android:name="android.permission.INTERNET"/>
-<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"/>
-<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"/>
-<uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage"/>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<queries>
+    <!-- للسماح بفتح روابط http/https (مطلوب لزر التحديث) -->
+    <intent>
+        <action android:name="android.intent.action.VIEW" />
+        <data android:scheme="https" />
+    </intent>
+    <intent>
+        <action android:name="android.intent.action.VIEW" />
+        <data android:scheme="http" />
+    </intent>
+    <!-- للسماح بفتح WhatsApp -->
+    <intent>
+        <action android:name="android.intent.action.VIEW" />
+        <data android:scheme="whatsapp" />
+    </intent>
+    <!-- للسماح بفتح Telegram -->
+    <intent>
+        <action android:name="android.intent.action.VIEW" />
+        <data android:scheme="tg" />
+    </intent>
+    <!-- للسماح بإرسال بريد إلكتروني -->
+    <intent>
+        <action android:name="android.intent.action.SENDTO" />
+        <data android:scheme="mailto" />
+    </intent>
+</queries>
 
     <application
-        android:label="flutter_mobile_ide"
+        android:label="souga"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity
@@ -29,7 +51,20 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+            <!-- Deep Links: souga://product/ID -->
+            <intent-filter>
+               <action android:name="android.intent.action.VIEW"/>
+               <category android:name="android.intent.category.DEFAULT"/>
+               <category android:name="android.intent.category.BROWSABLE"/>
+               <data android:scheme="souga"/>
+            </intent-filter>
         </activity>
+        <!-- ✅ جديد — أيقونة الإشعار الافتراضية لـ Firebase Cloud Messaging.
+             تُستخدم عند وصول إشعار والتطبيق بالخلفية أو مغلقاً، حيث يعرضها
+             نظام أندرويد تلقائياً في شريط الإشعارات بدون أي كود إضافي. -->
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@mipmap/ic_launcher" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

@@ -21,8 +21,11 @@ import '../../services/marketing_service.dart';
 import '../../services/push_notification_service.dart';
 import '../../services/seo_rebuild_service.dart';
 import '../../services/share_options_sheet.dart'
-    show showShareOptionsSheet, ShareProductData;
+    show showShareOptionsSheet, ShareProductData, sougaFirstVideoUrl;
 import '../../utils/app_colors.dart';
+import '../../utils/search_text.dart';
+import '../../widgets/product_sort_menu.dart';
+import '../../widgets/product/product_gallery_view.dart' show ProductImageFrame;
 import '../seller/product_form_stepper_screen.dart';
 
 // ── أسماء التصنيفات بالعربية — تُستخدم فقط لبناء سياق إعلان الذكاء الاصطناعي ──
@@ -56,6 +59,7 @@ class _AdminProductsScreenState extends State<AdminProductsScreen> {
   final _searchCtrl = TextEditingController();
   String _searchQuery    = '';
   String _filterCategory = '';
+  ProductSort _sort = ProductSort.newest;
 
   final List<Map<String, String>> _categories = [
     {'id': '',            'name': 'الكل'},
@@ -82,9 +86,10 @@ class _AdminProductsScreenState extends State<AdminProductsScreen> {
         Padding(
           padding: const EdgeInsets.all(12),
           child: Column(children: [
-            TextField(
+            Row(children: [
+            Expanded(child: TextField(
               controller: _searchCtrl,
-              onChanged: (v) => setState(() => _searchQuery = v.trim().toLowerCase()),
+              onChanged: (v) => setState(() => _searchQuery = v.trim()),
               decoration: InputDecoration(
                 hintText: 'بحث بالاسم أو اسم البائع...',
                 prefixIcon: const Icon(Icons.search),
@@ -97,7 +102,10 @@ class _AdminProductsScreenState extends State<AdminProductsScreen> {
                         })
                     : null,
               ),
-            ),
+            )),
+            const SizedBox(width: 8),
+            ProductSortButton(sort: _sort, onChanged: (s) => setState(() => _sort = s)),
+            ]),
             const SizedBox(height: 8),
             SizedBox(
               height: 36,
@@ -152,12 +160,13 @@ class _AdminProductsScreenState extends State<AdminProductsScreen> {
                   .map((d) => ProductModel.fromMap(d.data() as Map<String, dynamic>, d.id))
                   .toList();
 
-              if (_searchQuery.isNotEmpty) {
+              final q = normalizeSearch(_searchQuery);
+              if (q.isNotEmpty) {
                 products = products.where((p) =>
-                  p.name.toLowerCase().contains(_searchQuery) ||
-                  p.sellerName.toLowerCase().contains(_searchQuery)
+                  searchMatches(p.name, q) || searchMatches(p.sellerName, q)
                 ).toList();
               }
+              products = sortProducts(products, _sort);
 
               if (products.isEmpty) { return const Center(child: Text('لا توجد نتائج')); }
 
@@ -232,6 +241,7 @@ class _ProductAdminCard extends StatelessWidget {
         category:           _categoryDisplayName(product.category),
         productImageUrl:    product.firstImage.isNotEmpty
             ? ImageKitService.productUrl(product.firstImage) : '',
+        productVideoUrl:    sougaFirstVideoUrl(product.gallery),
         currencyCode:       product.currencyCode,
       ),
     ));
@@ -337,10 +347,10 @@ class _ProductAdminCard extends StatelessWidget {
         leading: ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: product.firstImage.isNotEmpty
-              ? Image.network(
-                  ImageKitService.productAdminUrl(product.firstImage),
-                  width: 52, height: 52, fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => Container(
+              ? ProductImageFrame(
+                  url: ImageKitService.productAdminUrl(product.firstImage),
+                  width: 52, height: 52, blurBackdrop: false, memCacheWidth: 160,
+                  fallback: Container(
                     width: 52, height: 52, color: colors.border,
                     child: const Icon(Icons.image_outlined)))
               : Container(
@@ -422,6 +432,7 @@ class _ProductAdminCard extends StatelessWidget {
         imageUrls:          imgs,
         adText:             '',
         productDescription: product.description,
+        videoUrl:           sougaFirstVideoUrl(product.gallery),
       ),
     );
   }

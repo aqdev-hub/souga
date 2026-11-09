@@ -10,13 +10,13 @@
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:cached_network_image/cached_network_image.dart';
 import '../models/product_model.dart';
 import '../providers/auth_provider.dart';
 import '../providers/cart_provider.dart';
 import '../providers/favorites_provider.dart';
 import '../services/imagekit_service.dart';
 import '../utils/app_colors.dart';
+import 'product/product_gallery_view.dart' show ProductImageFrame;
 
 class ProductCard extends StatelessWidget {
   final ProductModel product;
@@ -133,12 +133,11 @@ class ProductCard extends StatelessWidget {
     final colors = context.colors;
     if (product.firstImage.isNotEmpty) {
       final url = ImageKitService.productUrl(product.firstImage);
-      return CachedNetworkImage(
-        imageUrl: url, width: width, height: height, fit: BoxFit.cover,
-        memCacheWidth: 320,
-        placeholder: (_, __) => Container(width: width, height: height, color: colors.border,
-            child: const Center(child: CircularProgressIndicator(strokeWidth: 2))),
-        errorWidget: (_, __, ___) => _placeholder(colors, width, height),
+      // ✅ الإطار الموحّد: صورة كاملة بلا قص (contain) داخل مساحة البطاقة الثابتة.
+      return ProductImageFrame(
+        url: url, width: width, height: height,
+        memCacheWidth: 320, blurSigma: 14,
+        fallback: _placeholder(colors, width, height),
       );
     }
     return _placeholder(colors, width, height);

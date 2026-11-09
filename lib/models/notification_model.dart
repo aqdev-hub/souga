@@ -11,6 +11,8 @@ class NotificationModel {
   final String referenceId;
   final bool isRead;
   final DateTime createdAt;
+  /// صورة المنتج المرتبط بالإشعار (اختياري).
+  final String imageUrl;
 
   NotificationModel({
     required this.id,
@@ -21,6 +23,7 @@ class NotificationModel {
     this.referenceId = '',
     this.isRead = false,
     required this.createdAt,
+    this.imageUrl = '',
   });
 
   factory NotificationModel.fromMap(Map<String, dynamic> map, String id) {
@@ -32,6 +35,7 @@ class NotificationModel {
       type: map['type'] ?? 'system',
       referenceId: map['referenceId'] ?? '',
       isRead: map['isRead'] ?? false,
+      imageUrl: (map['imageUrl'] ?? '').toString(),
       createdAt: map['createdAt'] != null
           ? (map['createdAt'] as dynamic).toDate()
           : DateTime.now(),
@@ -46,6 +50,7 @@ class NotificationModel {
     'referenceId': referenceId,
     'isRead': isRead,
     'createdAt': createdAt,
+    if (imageUrl.isNotEmpty) 'imageUrl': imageUrl,
   };
 
   IconData get typeIcon {

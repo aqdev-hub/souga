@@ -116,6 +116,38 @@ class PushNotificationService {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  //  إشعار نظام حقيقي لمستخدم محدد (طلب جديد / تحديث حالة / رسالة محادثة).
+  //  يُرسَل عبر /notify-user ويتحقق السيرفر من العلاقة بين المرسل والمستلم.
+  //  "أطلق وانسَ": أي فشل لا يعطّل العملية الأصلية (الإشعار داخل التطبيق
+  //  محفوظ في Firestore على أي حال).
+  // ─────────────────────────────────────────────────────────────────────────
+  static Future<void> sendToUser({
+    required String userId,
+    required String title,
+    required String body,
+    required String type,
+    required String referenceId,
+    String imageUrl = '',
+  }) async {
+    try {
+      await http.post(
+        Uri.parse('$_serverUrl/notify-user'),
+        headers: await ApiClient.authHeaders(),
+        body: jsonEncode({
+          'userId': userId,
+          'title': title,
+          'body': body,
+          'type': type,
+          'referenceId': referenceId,
+          if (imageUrl.isNotEmpty) 'imageUrl': imageUrl,
+        }),
+      ).timeout(const Duration(seconds: 55));
+    } catch (e) {
+      debugPrint('[Push] sendToUser error: $e');
+    }
+  }
+
   static void _handleMessageTap(RemoteMessage message) {
     final productId = message.data['productId'];
     if (productId != null && productId.toString().trim().isNotEmpty) {

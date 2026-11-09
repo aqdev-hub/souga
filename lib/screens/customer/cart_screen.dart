@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/cart_provider.dart';
 import '../../utils/app_colors.dart';
+import '../../widgets/product/product_gallery_view.dart' show ProductImageFrame;
 import 'checkout_screen.dart';
 
 class CartScreen extends StatelessWidget {
@@ -76,8 +77,10 @@ class CartScreen extends StatelessWidget {
                       ClipRRect(
                         borderRadius: BorderRadius.circular(8),
                         child: item.image.isNotEmpty
-                            ? Image.network(item.image, width: 70, height: 70, fit: BoxFit.cover,
-                                errorBuilder: (_, __, ___) => Container(width: 70, height: 70, color: colors.border,
+                            ? ProductImageFrame(
+                                url: item.image, width: 70, height: 70,
+                                blurBackdrop: false, memCacheWidth: 200,
+                                fallback: Container(width: 70, height: 70, color: colors.border,
                                     child: const Icon(Icons.image_outlined)))
                             : Container(width: 70, height: 70, color: colors.border,
                                 child: Icon(Icons.image_outlined, color: colors.textHint)),

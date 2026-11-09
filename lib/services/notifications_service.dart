@@ -1,7 +1,10 @@
 // lib/services/notifications_service.dart
 
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/notification_model.dart';
+import 'push_notification_service.dart';
 
 class NotificationsService {
   static final FirebaseFirestore _fs = FirebaseFirestore.instance;
@@ -13,6 +16,8 @@ class NotificationsService {
     required String body,
     required String type,
     String referenceId = '',
+    // ✅ صورة المنتج المرتبط بالإشعار (تظهر في قائمة الإشعارات بدل أيقونة عامة).
+    String imageUrl = '',
   }) async {
     try {
       await _fs.collection('notifications').add({
@@ -21,10 +26,20 @@ class NotificationsService {
         'body': body,
         'type': type,
         'referenceId': referenceId,
+        if (imageUrl.isNotEmpty) 'imageUrl': imageUrl,
         'isRead': false,
         'createdAt': DateTime.now(),
       });
     } catch (_) {}
+    // ✅ إشعار نظام حقيقي (بأيقونة التطبيق وصورة المنتج) — بدون انتظار ولا تعطيل.
+    unawaited(PushNotificationService.sendToUser(
+      userId: toUserId,
+      title: title,
+      body: body,
+      type: type,
+      referenceId: referenceId,
+      imageUrl: imageUrl,
+    ));
   }
 
   // ─── إشعار طلب جديد للبائع ──────────────────────────
@@ -33,13 +48,22 @@ class NotificationsService {
     required String customerName,
     required String orderId,
     required double amount,
+    // ✅ اسم/صورة أول منتج في الطلب + رمز عملة الطلب الفعلي (كانت "ر.س" ثابتة).
+    String productName = '',
+    String imageUrl = '',
+    String currencySymbol = 'ر.س',
+    int itemsCount = 1,
   }) async {
+    final what = productName.isEmpty
+        ? ''
+        : '$productName${itemsCount > 1 ? ' و${itemsCount - 1} منتجات أخرى' : ''} — ';
     await send(
       toUserId: sellerId,
       title: '🛒 طلب جديد!',
-      body: 'قام $customerName بطلب بقيمة ${amount.toStringAsFixed(2)} ر.س',
+      body: '$customerName: $what${amount.toStringAsFixed(2)} $currencySymbol',
       type: 'new_order',
       referenceId: orderId,
+      imageUrl: imageUrl,
     );
   }
 
@@ -48,6 +72,8 @@ class NotificationsService {
     required String customerId,
     required String orderId,
     required String newStatus,
+    String productName = '',
+    String imageUrl = '',
   }) async {
     final statusLabels = {
       'confirmed': 'تم تأكيد طلبك ✅',
@@ -59,9 +85,12 @@ class NotificationsService {
     await send(
       toUserId: customerId,
       title: label,
-      body: 'رقم الطلب: ${orderId.substring(0, 8)}...',
+      body: productName.isEmpty
+          ? 'رقم الطلب: ${orderId.substring(0, 8)}'
+          : '$productName • رقم الطلب: ${orderId.substring(0, 8)}',
       type: 'order_status',
       referenceId: orderId,
+      imageUrl: imageUrl,
     );
   }
 

@@ -152,6 +152,7 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
             .toList(),
         adText:             '', // لا يوجد نص من Gemini هنا — يُبنى تلقائياً
         productDescription: p.description,
+        videoUrl:           sougaFirstVideoUrl(p.gallery),
       ),
     );
   }
@@ -256,6 +257,8 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
               Text('${_effectivePrice.toStringAsFixed(2)} ${widget.product.currencySymbol}',
                   style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: colors.primary)),
             ]),
+            // ✅ الوصف المختصر + حالة المنتج + القسم الفرعي المخصّص (تظهر فقط إن وُجدت)
+            _ProductQuickInfo(product: widget.product),
             const SizedBox(height: 12),
 
             // ─── اختيار المتغيرات (لون/مقاس/...) — تظهر شرطياً فقط عند
@@ -2010,5 +2013,55 @@ class _PurchaseButtonsRow extends StatelessWidget {
         child: const Text('شراء الآن'),
       )),
     ]);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  معلومات سريعة تحت الاسم: وصف مختصر + حالة (جديد/مستعمل) + قسم فرعي مخصّص.
+//  لا تُبنى أي واجهة إن لم يُدخل البائع شيئاً (منتج قديم يبقى كما هو).
+// ─────────────────────────────────────────────────────────────────────────────
+class _ProductQuickInfo extends StatelessWidget {
+  final ProductModel product;
+  const _ProductQuickInfo({required this.product});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final short = product.shortDescription.trim();
+    final sub = product.customSubcategory.trim();
+    final isUsed = product.condition == 'used';
+
+    Widget chip(IconData icon, String label, Color c) => Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          decoration: BoxDecoration(
+            color: c.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(color: c.withValues(alpha: 0.35)),
+          ),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, size: 14, color: c),
+            const SizedBox(width: 5),
+            Text(label,
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: c)),
+          ]),
+        );
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        if (short.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Text(short,
+                style: TextStyle(fontSize: 14, height: 1.5, color: colors.textSecondary)),
+          ),
+        Wrap(spacing: 8, runSpacing: 6, children: [
+          chip(isUsed ? Icons.recycling : Icons.fiber_new_outlined,
+              isUsed ? 'مستعمل' : 'جديد',
+              isUsed ? const Color(0xFFEF6C00) : const Color(0xFF2E7D32)),
+          if (sub.isNotEmpty) chip(Icons.label_outline, sub, colors.primary),
+        ]),
+      ]),
+    );
   }
 }

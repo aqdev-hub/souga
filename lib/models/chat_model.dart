@@ -9,6 +9,10 @@ class ChatMessage {
   final String text;
   final DateTime timestamp;
   final bool read;
+  /// ✅ "حذف لدي": معرّفات المستخدمين الذين حذفوا الرسالة من عندهم فقط.
+  final List<String> deletedFor;
+  /// ✅ "حذف للجميع": أرسلها صاحبها وحذفها للطرفين (يُعرض أثرها "تم حذف هذه الرسالة").
+  final bool deletedForAll;
 
   const ChatMessage({
     required this.id,
@@ -17,6 +21,8 @@ class ChatMessage {
     required this.text,
     required this.timestamp,
     required this.read,
+    this.deletedFor = const [],
+    this.deletedForAll = false,
   });
 
   factory ChatMessage.fromMap(Map<String, dynamic> map, String id) {
@@ -36,6 +42,8 @@ class ChatMessage {
       text:       (map['text']       ?? '').toString(),
       timestamp:  time,
       read:       map['read'] == true,
+      deletedFor: (map['deletedFor'] as List?)?.map((e) => e.toString()).toList() ?? const [],
+      deletedForAll: map['deletedForAll'] == true,
     );
   }
 
@@ -56,6 +64,10 @@ class ChatRoom {
   final String lastMessage;
   final DateTime lastMessageTime;
   final Map<String, int> unreadCount;
+  /// ✅ لكل مستخدم: وقت "مسح المحتوى" — الرسائل الأقدم منه مخفيّة عنده فقط.
+  final Map<String, DateTime> clearedAt;
+  /// ✅ لكل مستخدم: وقت "حذف المحادثة" — تُخفى من قائمته حتى تصله رسالة أحدث.
+  final Map<String, DateTime> hiddenAt;
 
   const ChatRoom({
     required this.id,
@@ -65,7 +77,30 @@ class ChatRoom {
     required this.lastMessage,
     required this.lastMessageTime,
     required this.unreadCount,
+    this.clearedAt = const {},
+    this.hiddenAt = const {},
   });
+
+  static Map<String, DateTime> _tsMap(dynamic raw) {
+    if (raw is! Map) return const {};
+    return raw.map((k, v) => MapEntry(
+        k.toString(), v is Timestamp ? v.toDate() : DateTime.now())); // null = serverTimestamp معلّق
+  }
+
+  /// محادثة محذوفة عندي ولم تصلني رسالة أحدث منذ حذفها.
+  bool isHiddenFor(String uid) {
+    final h = hiddenAt[uid];
+    return h != null && !lastMessageTime.isAfter(h);
+  }
+
+  /// وقت آخر "مسح محتوى" عندي (الرسائل قبله مخفية).
+  DateTime? clearedFor(String uid) => clearedAt[uid];
+
+  /// آخر رسالة في الغرفة مخفية عندي (بعد مسح/حذف)؟ — فلا تُعرض كمعاينة.
+  bool previewHiddenFor(String uid) {
+    final c = clearedAt[uid];
+    return c != null && !lastMessageTime.isAfter(c);
+  }
 
   factory ChatRoom.fromMap(Map<String, dynamic> map, String id) {
     final ts = map['lastMessageTime'];
@@ -91,6 +126,8 @@ class ChatRoom {
       lastMessage:       (map['lastMessage'] ?? '').toString(),
       lastMessageTime:   time,
       unreadCount:       unread,
+      clearedAt:         _tsMap(map['clearedAt']),
+      hiddenAt:          _tsMap(map['hiddenAt']),
     );
   }
 

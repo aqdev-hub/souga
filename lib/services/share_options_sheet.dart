@@ -22,6 +22,8 @@ import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../models/gallery_item_model.dart';
+
 // ════════════════════════════════════════════════════════════════════════════
 //  ثوابت
 // ════════════════════════════════════════════════════════════════════════════
@@ -48,6 +50,8 @@ class ShareProductData {
   final List<String> imageUrls;       // روابط كاملة
   final String       adText;          // نص Gemini (قد يكون فارغاً)
   final String       productDescription;
+  /// رابط فيديو المنتج (فارغ = لا يوجد فيديو)
+  final String       videoUrl;
 
   const ShareProductData({
     required this.productId,
@@ -59,6 +63,7 @@ class ShareProductData {
     required this.imageUrls,
     this.adText              = '',
     this.productDescription  = '',
+    this.videoUrl            = '',
   });
 
   // ── رابط المنتج — مصدر واحد لا يتغيّر ─────────────────────────────────
@@ -143,6 +148,14 @@ class SougaAdText {
       terms.any((t) => t.isNotEmpty && text.contains(t));
 }
 
+/// أول رابط فيديو في معرض المنتج (أو '' إن لم يوجد) — يستخدمه كل مواضع المشاركة.
+String sougaFirstVideoUrl(List<GalleryItemModel> gallery) {
+  for (final g in gallery) {
+    if (g.isVideo && g.url.trim().isNotEmpty) return g.url.trim();
+  }
+  return '';
+}
+
 // ════════════════════════════════════════════════════════════════════════════
 //  showShareOptionsSheet — نقطة الدخول الوحيدة
 // ════════════════════════════════════════════════════════════════════════════
@@ -179,6 +192,52 @@ Future<File?> _dlImg(String url) async {
   }
 }
 
+/// هل الرابط ملف فيديو مباشر يمكن تنزيله (وليس صفحة يوتيوب/فيميو)؟
+bool _isDirectVideo(String url) {
+  final u = url.toLowerCase();
+  if (u.contains('youtube.com') || u.contains('youtu.be') || u.contains('vimeo.com')) {
+    return false;
+  }
+  final path = u.split('?').first;
+  return u.contains('ik.imagekit.io') ||
+      path.endsWith('.mp4') || path.endsWith('.mov') ||
+      path.endsWith('.m4v') || path.endsWith('.webm') || path.endsWith('.3gp');
+}
+
+/// تنزيل الفيديو إلى ملف مؤقت بالتدفّق (لا يُحمَّل كله في الذاكرة). حدّ 60MB.
+Future<File?> _dlVideo(String url) async {
+  final client = http.Client();
+  try {
+    final req  = http.Request('GET', Uri.parse(url));
+    final resp = await client.send(req).timeout(const Duration(seconds: 30));
+    if (resp.statusCode != 200) return null;
+    const maxBytes = 60 * 1024 * 1024;
+    if ((resp.contentLength ?? 0) > maxBytes) return null;
+    final dir  = await getTemporaryDirectory();
+    final file = File('${dir.path}/sg_video_${DateTime.now().millisecondsSinceEpoch}.mp4');
+    final sink = file.openWrite();
+    var total = 0;
+    try {
+      await for (final chunk in resp.stream.timeout(const Duration(seconds: 60))) {
+        total += chunk.length;
+        if (total > maxBytes) { await sink.close(); await file.delete(); return null; }
+        sink.add(chunk);
+      }
+      await sink.close();
+    } catch (_) {
+      try { await sink.close(); } catch (_) {}
+      try { await file.delete(); } catch (_) {}
+      return null;
+    }
+    return total > 0 ? file : null;
+  } catch (e) {
+    debugPrint('[Souga Share] video download error: $e  url=$url');
+    return null;
+  } finally {
+    client.close();
+  }
+}
+
 Future<ui.Image?> _loadUiImage(File f, {int? w, int? h}) async {
   try {
     final bytes = await f.readAsBytes();
@@ -203,6 +262,7 @@ class _ShareSheet extends StatefulWidget {
 class _ShareSheetState extends State<_ShareSheet> {
   bool   _loading      = false;
   String _loadingLabel = '';
+  String _notice       = ''; // رسالة اعتذار/تنبيه داخل النافذة
 
   static const _opts = <_Opt>[
     _Opt('carousel', Icons.photo_library_outlined, Color(0xFF7B2D8B),
@@ -211,6 +271,9 @@ class _ShareSheetState extends State<_ShareSheet> {
     _Opt('single',   Icons.photo_outlined,          Color(0xFFE91E8C),
         'الصورة الرئيسية',
         'صورة واحدة احترافية مع النص التسويقي'),
+    _Opt('video',    Icons.videocam_outlined,       Color(0xFF00A86B),
+        'فيديو المنتج',
+        'مشاركة فيديو المنتج مع النص التسويقي (إن وُجد)'),
     _Opt('story',    Icons.auto_stories_outlined,   Color(0xFFFF5722),
         'Story إعلانية (9:16)',
         'تصميم Story جاهز للنشر على Instagram'),
@@ -221,7 +284,15 @@ class _ShareSheetState extends State<_ShareSheet> {
 
   Future<void> _exec(String id) async {
     if (_loading) return;
+    // فيديو غير موجود: اعتذار لطيف بلا أي عمل (ولا إغلاق للنافذة)
+    if (id == 'video' && widget.data.videoUrl.trim().isEmpty) {
+      setState(() => _notice =
+          'عذراً، هذا المنتج لا يحتوي على فيديو.\n'
+          'يمكنك مشاركة الصورة الرئيسية أو جميع الصور أو أي خيار آخر من القائمة.');
+      return;
+    }
     setState(() {
+      _notice       = '';
       _loading      = true;
       _loadingLabel = 'جاري التحضير...';
     });
@@ -229,6 +300,7 @@ class _ShareSheetState extends State<_ShareSheet> {
       switch (id) {
         case 'carousel': await _doCarousel(); break;
         case 'single':   await _doSingle();   break;
+        case 'video':    await _doVideo();    break;
         case 'story':    await _doStory();    break;
         case 'reel':     await _doReelKit();  break;
       }
@@ -287,6 +359,31 @@ class _ShareSheetState extends State<_ShareSheet> {
       } else {
         await Share.share(text, subject: d.productName);
       }
+    }
+    if (mounted) Navigator.pop(context);
+  }
+
+  // ── فيديو المنتج ────────────────────────────────────────────────────────
+  //  • ملف مباشر (ImageKit/mp4...) → يُنزَّل ويُشارك كملف فيديو + النص.
+  //  • رابط منصة (YouTube/Vimeo...) أو فشل التنزيل → يُشارك الرابط ضمن النص.
+  Future<void> _doVideo() async {
+    final d    = widget.data;
+    final url  = d.videoUrl.trim();
+    final text = SougaAdText(d).build();
+
+    File? file;
+    if (_isDirectVideo(url)) {
+      setState(() => _loadingLabel = 'جاري تنزيل الفيديو...');
+      file = await _dlVideo(url);
+    }
+
+    if (file != null) {
+      await Share.shareXFiles(
+        [XFile(file.path, mimeType: 'video/mp4')],
+        text: text, subject: d.productName,
+      );
+    } else {
+      await Share.share('$text\n\n🎬 $url', subject: d.productName);
     }
     if (mounted) Navigator.pop(context);
   }
@@ -400,6 +497,25 @@ class _ShareSheetState extends State<_ShareSheet> {
             ),
         ]),
         const SizedBox(height: 18),
+
+        // رسالة اعتذار (مثلاً: المنتج بلا فيديو)
+        if (_notice.isNotEmpty && !_loading)
+          Container(
+            width: double.infinity,
+            margin: const EdgeInsets.only(bottom: 12),
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: _kGold.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: _kGold.withValues(alpha: 0.45)),
+            ),
+            child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              const Icon(Icons.info_outline, color: _kGold, size: 20),
+              const SizedBox(width: 10),
+              Expanded(child: Text(_notice,
+                  style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.5))),
+            ]),
+          ),
 
         // loading
         if (_loading)

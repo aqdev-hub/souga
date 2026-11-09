@@ -8,12 +8,23 @@ import '../../providers/auth_provider.dart';
 import '../../screens/shared/chat_screen.dart';
 import '../../services/chat_service.dart';
 import '../../services/notifications_service.dart';
+import '../../services/order_service.dart';
+import '../../widgets/order_list_tools.dart';
 import 'package:url_launcher/url_launcher.dart';
 import '../../utils/app_colors.dart';
 
-class SellerOrdersScreen extends StatelessWidget {
+class SellerOrdersScreen extends StatefulWidget {
   final String? filterStatus;
   const SellerOrdersScreen({super.key, this.filterStatus});
+
+  @override
+  State<SellerOrdersScreen> createState() => _SellerOrdersScreenState();
+}
+
+class _SellerOrdersScreenState extends State<SellerOrdersScreen> {
+  String _query = '';
+  OrderSort _sort = OrderSort.newest;
+  bool _showDeleted = false; // عرض الطلبات التي حذفتُها من حسابي (للاستعادة)
 
   Color _statusColor(SougaColors colors, String s) {
     switch (s) {
@@ -41,48 +52,70 @@ class SellerOrdersScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final user = context.watch<AuthProvider>().currentUser!;
     final colors = context.colors;
+    final filterStatus = widget.filterStatus;
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(filterStatus != null ? 'طلبات: ${_statusArabic(filterStatus!)}' : 'الطلبات'),
+        title: Text(_showDeleted
+            ? 'الطلبات المحذوفة'
+            : (filterStatus != null ? 'طلبات: ${_statusArabic(filterStatus)}' : 'الطلبات')),
+        actions: [
+          IconButton(
+            tooltip: _showDeleted ? 'العودة للطلبات' : 'الطلبات المحذوفة',
+            icon: Icon(_showDeleted ? Icons.receipt_long_outlined : Icons.delete_sweep_outlined),
+            onPressed: () => setState(() => _showDeleted = !_showDeleted),
+          ),
+        ],
       ),
-      body: StreamBuilder<QuerySnapshot>(
-        stream: (() {
-          Query q = FirebaseFirestore.instance.collection('orders')
-              .where('sellerId', isEqualTo: user.uid);
-          if (filterStatus != null && filterStatus!.isNotEmpty) {
-            q = q.where('status', isEqualTo: filterStatus);
-          }
-          return q.orderBy('createdAt', descending: true).snapshots();
-        })(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-            return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Icon(Icons.receipt_long_outlined, size: 80, color: colors.border),
-              const SizedBox(height: 16),
-              Text(filterStatus != null ? 'لا توجد طلبات بهذه الحالة' : 'لا توجد طلبات بعد',
-                  style: TextStyle(fontSize: 16, color: colors.textSecondary)),
-            ]));
-          }
-
-          final orders = snapshot.data!.docs
-              .map((d) => OrderModel.fromMap(d.data() as Map<String, dynamic>, d.id))
-              .toList();
-
-          return ListView.builder(
-            padding: const EdgeInsets.all(12),
-            itemCount: orders.length,
-            itemBuilder: (_, i) => _OrderCard(
-              order: orders[i],
-              statusColor: (s) => _statusColor(colors, s),
-              statusArabic: _statusArabic,
-            ),
-          );
-        },
-      ),
+      body: Column(children: [
+        OrderToolbar(
+          sort: _sort,
+          onQueryChanged: (v) => setState(() => _query = v),
+          onSortChanged: (s) => setState(() => _sort = s),
+        ),
+        Expanded(
+          child: StreamBuilder<QuerySnapshot>(
+            stream: (() {
+              Query q = FirebaseFirestore.instance.collection('orders')
+                  .where('sellerId', isEqualTo: user.uid);
+              if (filterStatus != null && filterStatus.isNotEmpty) {
+                q = q.where('status', isEqualTo: filterStatus);
+              }
+              return q.orderBy('createdAt', descending: true).snapshots();
+            })(),
+            builder: (context, snapshot) {
+              if (snapshot.connectionState == ConnectionState.waiting) {
+                return const Center(child: CircularProgressIndicator());
+              }
+              final all = (snapshot.data?.docs ?? [])
+                  .map((d) => OrderModel.fromMap(d.data() as Map<String, dynamic>, d.id))
+                  .where((o) => o.hiddenForSeller == _showDeleted)
+                  .toList();
+              if (all.isEmpty) {
+                return orderEmptyState(context,
+                    searching: false,
+                    emptyText: _showDeleted
+                        ? 'لا توجد طلبات محذوفة'
+                        : (filterStatus != null ? 'لا توجد طلبات بهذه الحالة' : 'لا توجد طلبات بعد'));
+              }
+              final orders = applyOrderQuery(all, query: _query, sort: _sort);
+              if (orders.isEmpty) {
+                return orderEmptyState(context, searching: true, emptyText: '');
+              }
+              return ListView.builder(
+                padding: const EdgeInsets.all(12),
+                itemCount: orders.length,
+                itemBuilder: (_, i) => _OrderCard(
+                  order: orders[i],
+                  inTrash: _showDeleted,
+                  statusColor: (s) => _statusColor(colors, s),
+                  statusArabic: _statusArabic,
+                ),
+              );
+            },
+          ),
+        ),
+      ]),
     );
   }
 }
@@ -91,12 +124,33 @@ class _OrderCard extends StatelessWidget {
   final OrderModel order;
   final Color Function(String) statusColor;
   final String Function(String) statusArabic;
+  final bool inTrash;
 
   const _OrderCard({
     required this.order,
     required this.statusColor,
     required this.statusArabic,
+    this.inTrash = false,
   });
+
+  /// حذف من حسابي مع تراجع فوري (SnackBar) أو لاحقاً من "المحذوفة".
+  Future<void> _hideOrRestore(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      if (inTrash) {
+        await OrderService.restore(order.id, OrderOwnerRole.seller);
+        messenger.showSnackBar(const SnackBar(content: Text('تمت استعادة الطلب')));
+      } else {
+        await OrderService.hide(order.id, OrderOwnerRole.seller);
+        if (context.mounted) {
+          showUndoSnack(context, 'تم حذف الطلب من حسابك',
+              () => OrderService.restore(order.id, OrderOwnerRole.seller));
+        }
+      }
+    } catch (e) {
+      messenger.showSnackBar(SnackBar(content: Text('تعذّر تنفيذ العملية: $e')));
+    }
+  }
 
   Future<void> _openBuyerLocation(String latLng) async {
     if (latLng.isEmpty) return;
@@ -123,6 +177,8 @@ class _OrderCard extends StatelessWidget {
         customerId: order.customerId,
         orderId: order.id,
         newStatus: newStatus,
+        productName: order.products.isNotEmpty ? order.products.first.name : '',
+        imageUrl: order.products.isNotEmpty ? order.products.first.image : '',
       );
 
       if (context.mounted) {
@@ -159,6 +215,23 @@ class _OrderCard extends StatelessWidget {
               child: Text(statusArabic(order.status),
                   style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold)),
             ),
+            PopupMenuButton<String>(
+              tooltip: 'خيارات',
+              padding: EdgeInsets.zero,
+              icon: Icon(Icons.more_vert, size: 20, color: colors.textSecondary),
+              onSelected: (_) => _hideOrRestore(context),
+              itemBuilder: (_) => [
+                PopupMenuItem(
+                  value: 'x',
+                  child: Row(children: [
+                    Icon(inTrash ? Icons.restore_from_trash_outlined : Icons.delete_outline,
+                        size: 18, color: inTrash ? colors.success : colors.error),
+                    const SizedBox(width: 8),
+                    Text(inTrash ? 'استعادة الطلب' : 'حذف من حسابي'),
+                  ]),
+                ),
+              ],
+            ),
           ]),
           const SizedBox(height: 8),
           Row(children: [
@@ -173,23 +246,9 @@ class _OrderCard extends StatelessWidget {
                 style: TextStyle(color: colors.textSecondary, fontSize: 13)),
           ]),
           const SizedBox(height: 6),
-          // ✅ Variant-aware: يعرض خيارات التركيبة المشتراة (Snapshot ثابت
-          // وقت الطلب) — يساعد البائع على تجهيز التركيبة الصحيحة بالضبط.
-          ...order.products.map((p) => Padding(
-            padding: const EdgeInsets.only(bottom: 2),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('• ${p.name} × ${p.quantity}',
-                  style: TextStyle(fontSize: 13, color: colors.textSecondary)),
-              if (p.variantOptions != null && p.variantOptions!.isNotEmpty)
-                Padding(
-                  padding: const EdgeInsets.only(right: 12),
-                  child: Text(
-                    p.variantOptions!.entries.map((e) => '${e.key}: ${e.value}').join(' • '),
-                    style: TextStyle(fontSize: 11, color: colors.primary, fontWeight: FontWeight.w600),
-                  ),
-                ),
-            ]),
-          )),
+          // ✅ صورة مصغّرة + اسم كل منتج + خيارات التركيبة (Snapshot وقت الطلب)
+          // لتجهيز التركيبة الصحيحة بالضبط.
+          OrderProductsPreview(order: order, emphasizeVariants: true),
           const SizedBox(height: 8),
           if (order.shippingAddress.address.isNotEmpty) ...[
             Row(children: [

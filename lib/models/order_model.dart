@@ -114,6 +114,10 @@ class OrderModel {
   // ✅ عملة هذا الطلب تحديداً (كل طلب يخص بائعاً واحداً وعملة واحدة فقط).
   final String currencyCode;
   final String currencySymbol;
+  // ✅ "حذف من حسابي" (Soft delete): يُخفي الطلب من قوائم البائع/المدير فقط
+  // دون المساس بمستند الطلب نفسه — راجع OrderService.
+  final bool hiddenForSeller;
+  final bool hiddenForAdmin;
 
   // الحالات المتاحة
   static const String pending = 'pending';
@@ -137,6 +141,8 @@ class OrderModel {
     required this.createdAt,
     this.currencyCode   = 'SAR',
     this.currencySymbol = 'ر.س',
+    this.hiddenForSeller = false,
+    this.hiddenForAdmin  = false,
   });
 
   String get statusArabic {
@@ -177,6 +183,8 @@ class OrderModel {
           : DateTime.now(),
       currencyCode:   (map['currencyCode']   ?? 'SAR').toString(),
       currencySymbol: (map['currencySymbol'] ?? 'ر.س').toString(),
+      hiddenForSeller: map['hiddenForSeller'] == true,
+      hiddenForAdmin:  map['hiddenForAdmin']  == true,
     );
   }
 
@@ -195,6 +203,8 @@ class OrderModel {
       'createdAt': createdAt,
       'currencyCode': currencyCode,
       'currencySymbol': currencySymbol,
+      if (hiddenForSeller) 'hiddenForSeller': true,
+      if (hiddenForAdmin)  'hiddenForAdmin': true,
     };
   }
 }

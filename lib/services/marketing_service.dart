@@ -20,6 +20,7 @@ import 'share_options_sheet.dart' show showShareOptionsSheet, ShareProductData, 
 import 'api_client.dart';
 
 // رابط تنزيل التطبيق من الموقع الشخصي
+// ignore: unused_element
 const String _appDownloadUrl =
     'https://abdulquddus-dev.github.io/?project=souga';
 
@@ -164,6 +165,8 @@ class MarketingAdScreen extends StatefulWidget {
   final String storeName;
   final String category;
   final String productImageUrl;
+  /// رابط فيديو المنتج إن وُجد (لخيار "فيديو المنتج" في المشاركة)
+  final String productVideoUrl;
   final String currencyCode;
 
   const MarketingAdScreen({
@@ -175,6 +178,7 @@ class MarketingAdScreen extends StatefulWidget {
     required this.storeName,
     required this.category,
     required this.productImageUrl,
+    this.productVideoUrl = '',
     this.currencyCode = 'SAR',
   });
 
@@ -285,6 +289,7 @@ class _MarketingAdScreenState extends State<MarketingAdScreen>
         imageUrls:          imageUrls,
         adText:             adText,
         productDescription: widget.productDescription,
+        videoUrl:           widget.productVideoUrl,
       ),
     );
   }
@@ -299,6 +304,7 @@ class _MarketingAdScreenState extends State<MarketingAdScreen>
     }
   }
 
+  // ignore: unused_element
   Future<void> _shareAdWithImage() async {
     if (_sharing) { return; }
     setState(() => _sharing = true);
@@ -310,6 +316,7 @@ class _MarketingAdScreenState extends State<MarketingAdScreen>
       // Deep link للمنتج داخل التطبيق (souga://product/ID)
       // إذا التطبيق غير مثبت → يفتح صفحة التنزيل
       // رابط المنتج — ثابت
+      // ignore: unused_local_variable
       final productWebLink = 'https://souga-5fdb3.web.app/product/${widget.productId}';
 
       // استخدام SougaShareText لمنع تكرار السعر والمتجر والـ CTA
@@ -368,6 +375,7 @@ class _MarketingAdScreenState extends State<MarketingAdScreen>
     }
   }
 
+  // ignore: unused_element
   String get _shareCtaText => _content?.callToAction ?? 'اطلب الآن';
 
   // ── تنزيل صورة من URL ────────────────────────────────────────────

@@ -1,7 +1,10 @@
 // lib/services/chat_service.dart
 
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/chat_model.dart';
+import 'push_notification_service.dart';
 
 class ChatService {
   static final FirebaseFirestore _fs = FirebaseFirestore.instance;
@@ -74,6 +77,16 @@ class ChatService {
     });
 
     await batch.commit();
+
+    // ✅ إشعار نظام للطرف الآخر برسالة جديدة (بدون انتظار ولا تعطيل الإرسال)
+    final preview = text.trim();
+    unawaited(PushNotificationService.sendToUser(
+      userId: receiverId,
+      title: senderName.isEmpty ? 'رسالة جديدة' : senderName,
+      body: preview.length > 120 ? '${preview.substring(0, 120)}…' : preview,
+      type: 'chat',
+      referenceId: roomId,
+    ));
   }
 
   /// تعليم الرسائل كمقروءة
@@ -114,6 +127,88 @@ class ChatService {
         .map((snap) => snap.docs
             .map((d) => ChatMessage.fromMap(d.data(), d.id))
             .toList());
+  }
+
+  /// Stream لغرفة واحدة (لمعرفة وقت مسح المحتوى عندي).
+  static Stream<ChatRoom?> roomStream(String roomId) {
+    return _fs.collection('chat_rooms').doc(roomId).snapshots().map(
+        (d) => d.exists && d.data() != null ? ChatRoom.fromMap(d.data()!, d.id) : null);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ✅ حذف/مسح بأسلوب واتساب — كله "لدي أنا" عبر حقول على المستندات،
+  //  فلا يحتاج تعديل قواعد Firestore (update مسموح للمشاركين أصلاً).
+  // ═══════════════════════════════════════════════════════════════════
+
+  /// حذف رسائل من عندي فقط.
+  static Future<void> deleteMessagesForMe({
+    required String roomId,
+    required List<String> ids,
+    required String myUid,
+  }) async {
+    for (var i = 0; i < ids.length; i += 400) {
+      final batch = _fs.batch();
+      for (final id in ids.skip(i).take(400)) {
+        batch.update(
+          _fs.collection('chat_rooms').doc(roomId).collection('messages').doc(id),
+          {'deletedFor': FieldValue.arrayUnion([myUid])},
+        );
+      }
+      await batch.commit();
+    }
+  }
+
+  /// حذف رسائلي للجميع (يُستدعى لرسائل المستخدم نفسه فقط من الواجهة).
+  static Future<void> deleteMessagesForEveryone({
+    required String roomId,
+    required List<String> ids,
+    bool lastMessageAffected = false,
+  }) async {
+    for (var i = 0; i < ids.length; i += 400) {
+      final batch = _fs.batch();
+      for (final id in ids.skip(i).take(400)) {
+        batch.update(
+          _fs.collection('chat_rooms').doc(roomId).collection('messages').doc(id),
+          {'deletedForAll': true, 'text': ''},
+        );
+      }
+      await batch.commit();
+    }
+    if (lastMessageAffected) {
+      await _fs.collection('chat_rooms').doc(roomId)
+          .update({'lastMessage': 'تم حذف هذه الرسالة'});
+    }
+  }
+
+  /// مسح محتوى محادثة (أو عدة محادثات) عندي: تبقى في القائمة بلا رسائل.
+  static Future<void> clearRooms({
+    required List<String> roomIds,
+    required String myUid,
+  }) async {
+    final batch = _fs.batch();
+    for (final id in roomIds) {
+      batch.update(_fs.collection('chat_rooms').doc(id), {
+        'clearedAt.$myUid': FieldValue.serverTimestamp(),
+        'unreadCount.$myUid': 0,
+      });
+    }
+    await batch.commit();
+  }
+
+  /// حذف محادثة (أو عدة محادثات) من قائمتي: تُمسح وتُخفى حتى تصلني رسالة جديدة.
+  static Future<void> deleteRooms({
+    required List<String> roomIds,
+    required String myUid,
+  }) async {
+    final batch = _fs.batch();
+    for (final id in roomIds) {
+      batch.update(_fs.collection('chat_rooms').doc(id), {
+        'clearedAt.$myUid': FieldValue.serverTimestamp(),
+        'hiddenAt.$myUid': FieldValue.serverTimestamp(),
+        'unreadCount.$myUid': 0,
+      });
+    }
+    await batch.commit();
   }
 
   /// Stream لقائمة المحادثات

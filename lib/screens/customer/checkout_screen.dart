@@ -178,6 +178,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
           customerName: user.name,
           orderId:      docRef.id,
           amount:       total,
+          productName:  items.first.name as String,
+          imageUrl:     items.first.image as String,
+          currencySymbol: currencySymbol,
+          itemsCount:   items.length,
         );
       }
 

@@ -190,3 +190,32 @@ Firestore orders/{id}: مستقل 100% للأبد — لا يتأثر بأي ت�
 بيئة التنفيذ قابلة لإعادة التشغيل غير المتوقعة أثناء الجلسات الطويلة، ما قد يُفقِد
 ملفات العمل المؤقتة. **الحل المتّبع بنجاح:** تغليف كل تسليم مكتمل فوراً في ZIP بعد
 كل مرحلة صغيرة بدل تأجيل التجميع للنهاية — واصل بنفس المنهجية.
+
+---
+
+## 🆕 جلسة 2026-11-08/09 — الطلبات والمحادثات والإشعارات (3 دفعات)
+
+**الدفعة 1 (الصور والطلبات):**
+- `ProductImageFrame` (في `product_gallery_view.dart`): صورة بحجم كامل `BoxFit.contain` مع خلفية مموّهة؛
+  الإصلاح الجوهري: `width/height: double.infinity` على `CachedNetworkImage` (وإلا تُعرض بحجمها الأصلي دون تكبير).
+- الطلبات (مشتري/بائع/أدمن): صورة مصغّرة + اسم المنتج (`OrderProductsPreview`)، بحث (`normalizeSearch` يتجاهل التشكيل)،
+  فرز (`OrderSort`)، تراجع المشتري عن الطلب (`OrderService.cancelByCustomer`، pending/confirmed فقط)،
+  حذف ناعم للبائع/الأدمن عبر `hiddenForSeller`/`hiddenForAdmin` مع تراجع (Undo) وسلة لعرض المحذوف واستعادته.
+- فرز المنتجات (`product_sort_menu.dart`) في شاشتَي منتجات البائع والأدمن + بحث البائع.
+- ⚠️ الحذف إخفاء من قوائم صاحب الحساب فقط؛ عدّادات لوحة التحكم لا تتأثر.
+
+**الدفعة 2 (المحادثات والإشعارات):**
+- المحادثات: بحث، تحديد متعدد (ضغط مطوّل + تحديد الكل)، حذف المحادثة/مسح المحتوى "لدي فقط"
+  عبر `hiddenAt.{uid}` / `clearedAt.{uid}` على الغرفة و`deletedFor`/`deletedForAll` على الرسالة (بلا تعديل قواعد Firestore).
+  داخل المحادثة: بحث، تحديد، نسخ، حذف لدي / للجميع (لرسائلي فقط)، مسح المحادثة.
+- الإشعارات داخل التطبيق: صورة المنتج (`imageUrl`) أو أيقونة التطبيق + شارة النوع.
+- أندرويد: `ic_notification.xml` (أحادي اللون) + `default_notification_color` قرمزي + تعديل `AndroidManifest.xml`.
+
+**الدفعة 3 (Push حقيقي + تنظيف):**
+- السيرفر: `POST /notify-user` (في `server/index.js`) — يتحقق من علاقة المرسل بالمستلم (طلب: مشتري/بائع/أدمن، محادثة: participants)
+  ثم يرسل FCM بأيقونة `ic_notification` ولون #DC143C وصورة المنتج. حدّ 300 طلب/ساعة لكل مستخدم.
+- التطبيق: `PushNotificationService.sendToUser` تُستدعى تلقائياً (fire-and-forget) من `NotificationsService.send` ومن `ChatService.sendMessage`.
+- ⚠️ الضغط على إشعار طلب/محادثة يفتح التطبيق فقط (التوجيه العميق مدعوم لإشعارات المنتجات `productId` فقط) — تحسين مستقبلي.
+- ⚠️ يتطلب `webview_flutter: ^4.10.0` في pubspec (مشغّل YouTube/Vimeo).
+- تنظيف تحذيرات المحلل (marketing_service, product_gallery_view, deep_link_service).
+- مؤجّل: "حفظ كمسودة"، ضغط الفيديو، `add_product_screen.dart` القديم.

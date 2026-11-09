@@ -102,14 +102,23 @@ class _ProductFormStepperScreenState extends State<ProductFormStepperScreen> {
     final file = await ImageKitService.pickVideo(fromCamera: fromCamera);
     if (file == null || !mounted) return;
     _controller.setVideoUploadState(uploading: true, progress: 0);
-    String? errorMsg;
-    final url = await ImageKitService.uploadVideo(
+    // ✅ ضغط الفيديو أولاً (أول 35% من الشريط) ثم الرفع (الباقي)
+    final prepared = await ImageKitService.compressVideo(
       file,
       onProgress: (p) {
-        if (mounted) _controller.setVideoUploadState(uploading: true, progress: p);
+        if (mounted) _controller.setVideoUploadState(uploading: true, progress: p * 0.35);
+      },
+    );
+    if (!mounted) return;
+    String? errorMsg;
+    final url = await ImageKitService.uploadVideo(
+      prepared,
+      onProgress: (p) {
+        if (mounted) _controller.setVideoUploadState(uploading: true, progress: 0.35 + p * 0.65);
       },
       onError: (m) => errorMsg = m,
     );
+    ImageKitService.clearVideoCache();
     if (!mounted) return;
     _controller.setVideoUploadState(uploading: false);
     if (url != null) {

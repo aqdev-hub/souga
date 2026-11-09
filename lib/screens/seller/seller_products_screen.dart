@@ -15,7 +15,11 @@ import '../../providers/auth_provider.dart';
 import '../../services/imagekit_service.dart';
 import '../../services/marketing_service.dart';
 import '../../services/seo_rebuild_service.dart';
+import '../../services/share_options_sheet.dart' show sougaFirstVideoUrl;
 import '../../utils/app_colors.dart';
+import '../../utils/search_text.dart';
+import '../../widgets/product_sort_menu.dart';
+import '../../widgets/product/product_gallery_view.dart' show ProductImageFrame;
 import 'product_form_stepper_screen.dart';
 
 // ── أسماء التصنيفات بالعربية — تُستخدم فقط لبناء سياق إعلان الذكاء الاصطناعي ──
@@ -39,8 +43,23 @@ String _categoryDisplayName(String id) {
   return match['name'] ?? id;
 }
 
-class SellerProductsScreen extends StatelessWidget {
+class SellerProductsScreen extends StatefulWidget {
   const SellerProductsScreen({super.key});
+
+  @override
+  State<SellerProductsScreen> createState() => _SellerProductsScreenState();
+}
+
+class _SellerProductsScreenState extends State<SellerProductsScreen> {
+  final _searchCtrl = TextEditingController();
+  String _query = '';
+  ProductSort _sort = ProductSort.newest;
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
 
   Future<void> _deleteProduct(BuildContext context, String productId) async {
     final colors = context.colors;
@@ -89,6 +108,7 @@ class SellerProductsScreen extends StatelessWidget {
         category:           _categoryDisplayName(p.category),
         productImageUrl:    p.firstImage.isNotEmpty
             ? ImageKitService.productUrl(p.firstImage) : '',
+        productVideoUrl:    sougaFirstVideoUrl(p.gallery),
         currencyCode:       p.currencyCode,
       ),
     ));
@@ -107,7 +127,46 @@ class SellerProductsScreen extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(title: const Text('منتجاتي')),
-      body: StreamBuilder<QuerySnapshot>(
+      body: Column(children: [
+        // ✅ بحث + فرز (قائمة اختيار)
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 12, 2),
+          child: Row(children: [
+            Expanded(
+              child: TextField(
+                controller: _searchCtrl,
+                onChanged: (v) => setState(() => _query = v),
+                decoration: InputDecoration(
+                  hintText: 'ابحث في منتجاتك...',
+                  hintStyle: const TextStyle(fontSize: 13),
+                  isDense: true,
+                  prefixIcon: const Icon(Icons.search, size: 20),
+                  suffixIcon: _query.isEmpty
+                      ? null
+                      : IconButton(
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: () {
+                            _searchCtrl.clear();
+                            setState(() => _query = '');
+                          }),
+                  filled: true,
+                  fillColor: colors.surface,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide(color: colors.border),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide(color: colors.border),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            ProductSortButton(sort: _sort, onChanged: (s) => setState(() => _sort = s)),
+          ]),
+        ),
+        Expanded(child: StreamBuilder<QuerySnapshot>(
         stream: FirebaseFirestore.instance
             .collection('products')
             .where('sellerId', isEqualTo: user.uid)
@@ -134,9 +193,18 @@ class SellerProductsScreen extends StatelessWidget {
             );
           }
 
-          final products = snapshot.data!.docs
+          var products = snapshot.data!.docs
               .map((d) => ProductModel.fromMap(d.data() as Map<String, dynamic>, d.id))
               .toList();
+          final q = normalizeSearch(_query);
+          if (q.isNotEmpty) {
+            products = products.where((p) => searchMatches(p.name, q)).toList();
+          }
+          products = sortProducts(products, _sort);
+          if (products.isEmpty) {
+            return Center(child: Text('لا توجد نتائج مطابقة',
+                style: TextStyle(color: colors.textSecondary)));
+          }
 
           return ListView.builder(
             padding: const EdgeInsets.all(12),
@@ -150,9 +218,10 @@ class SellerProductsScreen extends StatelessWidget {
                   leading: ClipRRect(
                     borderRadius: BorderRadius.circular(8),
                     child: p.firstImage.isNotEmpty
-                        ? Image.network(p.firstImage,
-                            width: 60, height: 60, fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => Container(
+                        ? ProductImageFrame(
+                            url: p.firstImage, width: 60, height: 60,
+                            blurBackdrop: false, memCacheWidth: 200,
+                            fallback: Container(
                                 width: 60, height: 60, color: colors.border,
                                 child: const Icon(Icons.image_outlined)))
                         : Container(
@@ -188,7 +257,8 @@ class SellerProductsScreen extends StatelessWidget {
             },
           );
         },
-      ),
+      )),
+      ]),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => _openProductForm(context),
         backgroundColor: colors.primary,

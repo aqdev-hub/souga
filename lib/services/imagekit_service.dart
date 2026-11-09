@@ -15,6 +15,7 @@ import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 import 'package:uuid/uuid.dart';
 import 'api_client.dart';
+import 'package:video_compress/video_compress.dart';
 
 class ImageKitService {
   static const String _authServerUrl = ApiClient.serverBaseUrl;
@@ -48,6 +49,49 @@ class ImageKitService {
   // ─────────────────────────────────────────────────────────────────────────────
   static const int maxVideoBytes = 25 * 1024 * 1024; // 25MB
   static const Duration maxVideoDuration = Duration(seconds: 30);
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  //  ✅ ضغط الفيديو قبل الرفع (video_compress — MediaCodec الأصلي، بلا FFmpeg ثقيل).
+  //  - جودة متوسطة تناسب شاشة الجوال وتخفّض الحجم عادةً عدة أضعاف.
+  //  - عند أي فشل أو إن لم ينقص الحجم يُعاد الملف الأصلي (لا يتعطل الرفع أبداً).
+  //  - [onProgress] من 0.0 إلى 1.0.
+  // ─────────────────────────────────────────────────────────────────────────────
+  static Future<File> compressVideo(
+    File input, {
+    void Function(double progress)? onProgress,
+  }) async {
+    dynamic sub;
+    try {
+      sub = VideoCompress.compressProgress$.subscribe((v) {
+        onProgress?.call((v / 100).clamp(0.0, 1.0).toDouble());
+      });
+      final info = await VideoCompress.compressVideo(
+        input.path,
+        quality: VideoQuality.MediumQuality,
+        deleteOrigin: false,
+        includeAudio: true,
+      );
+      final out = info?.file;
+      if (out != null && await out.exists()) {
+        final newSize = await out.length();
+        final oldSize = await input.length();
+        debugPrint('[ImageKit] video compressed: '
+            '${(oldSize / 1048576).toStringAsFixed(1)}MB → '
+            '${(newSize / 1048576).toStringAsFixed(1)}MB');
+        if (newSize > 0 && newSize < oldSize) return out;
+      }
+    } catch (e) {
+      debugPrint('[ImageKit] compressVideo error (using original): $e');
+    } finally {
+      try { sub?.unsubscribe(); } catch (_) {}
+    }
+    return input;
+  }
+
+  /// تنظيف ملفات الضغط المؤقتة بعد الرفع.
+  static Future<void> clearVideoCache() async {
+    try { await VideoCompress.deleteAllCache(); } catch (_) {}
+  }
 
   static Future<File?> pickVideo({bool fromCamera = false}) async {
     try {

@@ -7,6 +7,7 @@
 import 'package:flutter/material.dart';
 import '../../controllers/product_gallery_controller.dart';
 import '../../utils/app_colors.dart';
+import 'product_gallery_view.dart' show ProductImageFrame;
 
 class ProductGalleryThumbnailBar extends StatelessWidget {
   final ProductGalleryController controller;
@@ -59,10 +60,11 @@ class _ThumbnailTile extends StatelessWidget {
           child: ClipRRect(
             borderRadius: BorderRadius.circular(10),
             child: entry.imageUrl != null
-                ? Image.network(
-                    entry.imageUrl!,
-                    fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => _fallback(colors),
+                ? ProductImageFrame(
+                    url: entry.imageUrl!,
+                    blurBackdrop: false,
+                    memCacheWidth: 160,
+                    fallback: _fallback(colors),
                   )
                 : _fallback(colors),
           ),

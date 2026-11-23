@@ -28,6 +28,8 @@ import '../models/gallery_item_model.dart';
 import '../models/product_model.dart';
 import '../models/product_option_ref_model.dart';
 import '../models/product_variant_model.dart';
+import '../models/attribute_favorite.dart';
+import '../repositories/attribute_favorites_repository.dart';
 import '../repositories/attribute_repository.dart';
 import '../repositories/category_repository.dart';
 import '../repositories/product_repository.dart';
@@ -35,19 +37,24 @@ import '../repositories/variant_repository.dart';
 import '../services/ai_assistant_service.dart';
 import '../services/push_notification_service.dart';
 import '../services/seo_rebuild_service.dart';
+import '../utils/arabic_plural.dart';
 import '../utils/currencies.dart';
+import '../utils/measure_units.dart';
+import '../utils/ready_colors.dart';
 
 /// تركيبة SKU واحدة قيد التحرير — قبل الحفظ (لا تحمل id حقيقياً بعد، يُبنى
 /// SKU الفعلي فقط عند save() لأنه يحتاج productId الحقيقي من Firestore).
 class VariantDraft {
   final Map<String, String> optionValues; // مثال: {'color': 'red', 'size': 'xl'}
   double price;
+  double originalPrice; // السعر قبل الخصم (0 = بلا خصم)
   int stock;
   bool isActive;
 
   VariantDraft({
     required this.optionValues,
     required this.price,
+    this.originalPrice = 0,
     this.stock = 0,
     this.isActive = true,
   });
@@ -76,6 +83,7 @@ class AddEditProductController extends ChangeNotifier {
   final AttributeRepository attributeRepo;
   final ProductRepository productRepo;
   final VariantRepository variantRepo;
+  final AttributeFavoritesRepository favoritesRepo;
 
   /// null = وضع "إضافة منتج جديد"، غير null = وضع "تعديل".
   final ProductModel? existingProduct;
@@ -97,10 +105,12 @@ class AddEditProductController extends ChangeNotifier {
     AttributeRepository? attributeRepo,
     ProductRepository? productRepo,
     VariantRepository? variantRepo,
+    AttributeFavoritesRepository? favoritesRepo,
   })  : categoryRepo = categoryRepo ?? CategoryRepository(),
         attributeRepo = attributeRepo ?? AttributeRepository(),
         productRepo = productRepo ?? ProductRepository(),
-        variantRepo = variantRepo ?? VariantRepository() {
+        variantRepo = variantRepo ?? VariantRepository(),
+        favoritesRepo = favoritesRepo ?? AttributeFavoritesRepository() {
     _initControllers();
     unawaited(_init());
   }
@@ -204,6 +214,12 @@ class AddEditProductController extends ChangeNotifier {
     attributeValues
       ..clear()
       ..addAll(p.attributes);
+    // ✅ الخصائص المخفية عن المشتري تعود ظاهرة للبائع مع علامة "مخفية".
+    hiddenFromBuyerKeys.clear();
+    for (final e in p.hiddenAttributes.entries) {
+      attributeValues[e.key] = e.value;
+      hiddenFromBuyerKeys.add(e.key);
+    }
     hasVariants = p.hasVariants;
     selectedVariantValueIds.clear();
     customOptionValues.clear();
@@ -241,10 +257,16 @@ class AddEditProductController extends ChangeNotifier {
         }
       }
     }
+    // وحدة القياس تُستنتج من التسميات المحفوظة ("5 لتر") لتبقى الإضافة اللاحقة بنفس الوحدة.
+    attributeUnits.clear();
+    for (final entry in p.optionSets.entries) {
+      final u = inferMeasureUnit(entry.value.map((v) => v.label));
+      if (u != null) attributeUnits[entry.key] = u;
+    }
     // ✅ مواصفات أضافها البائع (مفاتيح attributes غير المعرَّفة في الفئة):
     // كانت تُحفَظ لكنها تختفي من شاشة التعديل — نُعيدها الآن كخصائص ظاهرة.
     final knownDescriptive = _categoryAttributes.where((a) => !a.isVariant).map((a) => a.key).toSet();
-    for (final entry in p.attributes.entries) {
+    for (final entry in attributeValues.entries) {
       if (knownDescriptive.contains(entry.key)) continue;
       if (p.optionSets.containsKey(entry.key)) continue;
       customAttributeDefs.add(AttributeDefinitionModel(
@@ -281,6 +303,7 @@ class AddEditProductController extends ChangeNotifier {
           if (item.optionValueId != null) sizeImageUrls[item.optionValueId!] = item.url;
           break;
         case GalleryItemRole.other:
+          if (item.optionValueId != null && item.optionKey != null) otherImageUrls[item.optionValueId!] = item.url;
           break;
       }
     }
@@ -296,6 +319,7 @@ class AddEditProductController extends ChangeNotifier {
       final match = realVariants.where((v) => draft._sameOptions(v.optionValues));
       if (match.isNotEmpty) {
         draft.price = match.first.price;
+        draft.originalPrice = match.first.originalPrice;
         draft.stock = match.first.stock;
         draft.isActive = match.first.isActive;
       }
@@ -458,6 +482,9 @@ class AddEditProductController extends ChangeNotifier {
       text: p?.originalPrice != null ? p!.originalPrice.toString() : '',
     );
     stockCtrl = TextEditingController(text: p != null ? p.stock.toString() : '');
+    unifiedPriceCtrl = TextEditingController();
+    unifiedOriginalCtrl = TextEditingController();
+    unifiedStockCtrl = TextEditingController();
     videoUrlCtrl = TextEditingController(); // يُملأ لاحقاً في _hydrateFromExistingProduct إن وُجد فيديو
     if (p != null) {
       images = List.of(p.images);
@@ -623,10 +650,15 @@ class AddEditProductController extends ChangeNotifier {
 
   /// كل القيم المتاحة لعرضها لخاصية معيّنة = الرسمية المعرَّفة مسبقاً + أي
   /// قيم مخصَّصة أضافها البائع لهذا المنتج تحديداً.
-  List<AttributeOptionValue> optionValuesFor(AttributeDefinitionModel attr) => [
-        ...attr.predefinedValues,
-        ...(customOptionValues[attr.key] ?? const []),
-      ];
+  List<AttributeOptionValue> optionValuesFor(AttributeDefinitionModel attr) {
+    final removed = _removedPredefined[attr.key] ?? const <String>{};
+    final overrides = _valueOverrides[attr.key] ?? const <String, AttributeOptionValue>{};
+    return [
+      for (final v in attr.predefinedValues)
+        if (!removed.contains(v.id)) overrides[v.id] ?? v,
+      ...(customOptionValues[attr.key] ?? const []),
+    ];
+  }
 
   /// إيجاد القيمة (تسمية/لون) لأي valueId ضمن خاصية معيّنة — رسمية أو مخصَّصة.
   AttributeOptionValue? resolveOptionValue(AttributeDefinitionModel attr, String valueId) {
@@ -647,6 +679,404 @@ class AddEditProductController extends ChangeNotifier {
     selectedVariantValueIds.putIfAbsent(attrKey, () => <String>{}).add(id);
     _regenerateDrafts();
     notifyListeners();
+  }
+
+  /// وحدة القياس المعتمدة لكل خاصية (إن اختار البائع وحدة): key → وحدة.
+  final Map<String, MeasureUnit> attributeUnits = {};
+
+  /// ✅ إضافة عدة قيم دفعة واحدة لخاصية اختيارية (5، 7، 12 لتر) أو بلا وحدة
+  /// (S، M، L). تُختار كلها فوراً. القيمة الموجودة مسبقاً (رسمية أو مخصَّصة) بنفس
+  /// التسمية لا تتكرر — تُختار فقط. تُعيد عدد القيم التي أُضيفت/اختيرت.
+  int addVariantValues(String attrKey, List<String> labels, {MeasureUnit? unit}) {
+    if (unit != null) attributeUnits[attrKey] = unit;
+    final attrMatches = variantAttributesAvailable.where((a) => a.key == attrKey);
+    final known = attrMatches.isNotEmpty ? optionValuesFor(attrMatches.first) : (customOptionValues[attrKey] ?? const <AttributeOptionValue>[]);
+    final list = customOptionValues.putIfAbsent(attrKey, () => []);
+    final selected = selectedVariantValueIds.putIfAbsent(attrKey, () => <String>{});
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    var n = 0;
+    for (var i = 0; i < labels.length; i++) {
+      final label = labels[i].trim();
+      if (label.isEmpty) continue;
+      final dup = known.where((v) => v.label.trim().toLowerCase() == label.toLowerCase());
+      if (dup.isNotEmpty) {
+        selected.add(dup.first.id);
+      } else {
+        final id = 'custom_${stamp}_$i';
+        list.add(AttributeOptionValue(id: id, label: label));
+        selected.add(id);
+      }
+      n++;
+    }
+    if (selected.isEmpty) selectedVariantValueIds.remove(attrKey);
+    if (n > 0 && !hasVariants) hasVariants = true;
+    _regenerateDrafts();
+    notifyListeners();
+    return n;
+  }
+
+  /// تسميات القيم الموجودة لخاصية (للتحقق من التكرار في نافذة الإدخال).
+  List<String> existingValueLabels(String attrKey) {
+    final a = attributeByKey(attrKey);
+    if (a == null) return [for (final v in customOptionValues[attrKey] ?? const <AttributeOptionValue>[]) v.label];
+    return [for (final v in optionValuesFor(a)) v.label];
+  }
+
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ✅ إدارة الخصائص والقيم (القسم 2): إعادة تسمية، حذف، تعطيل، إخفاء عن المشتري
+  //  • خصائص الفئة الرسمية: تُعطَّل/تُفعَّل وتُدار قيمها (تعديل/حذف/تعطيل) لهذا المنتج فقط؛
+  //    اسمها ثابت لأن المشتري والبحث يقرآن تعريفها من النظام.
+  //  • خصائص البائع (المضافة/الجاهزة/المفضلة): إعادة تسمية وحذف كاملان.
+  // ═══════════════════════════════════════════════════════════════════
+  final Set<String> disabledAttrKeys = {};
+  final Set<String> hiddenFromBuyerKeys = {};
+  final Map<String, Set<String>> _removedPredefined = {};
+  final Map<String, Map<String, AttributeOptionValue>> _valueOverrides = {};
+  final Map<String, Set<String>> _stashedSelection = {};
+  final Map<String, String> _stashedValue = {};
+
+  AttributeDefinitionModel? attributeByKey(String key) {
+    for (final a in [..._categoryAttributes, ...customAttributeDefs]) {
+      if (a.key == key) return a;
+    }
+    return null;
+  }
+
+  bool isAttributeEnabled(String key) => !disabledAttrKeys.contains(key);
+
+  /// تعطيل خاصية = لا تُحفظ ولا تدخل التركيبات، مع حفظ اختيارات البائع مؤقتاً لاسترجاعها عند إعادة التفعيل.
+  void setAttributeEnabled(String key, bool enabled) {
+    final attr = attributeByKey(key);
+    if (attr == null) return;
+    if (enabled) {
+      disabledAttrKeys.remove(key);
+      final sel = _stashedSelection.remove(key);
+      if (sel != null && sel.isNotEmpty) {
+        selectedVariantValueIds[key] = sel;
+        hasVariants = true;
+      }
+      final v = _stashedValue.remove(key);
+      if (v != null && v.isNotEmpty) attributeValues[key] = v;
+    } else {
+      disabledAttrKeys.add(key);
+      final sel = selectedVariantValueIds.remove(key);
+      if (sel != null && sel.isNotEmpty) _stashedSelection[key] = sel;
+      final v = attributeValues.remove(key);
+      if (v != null && v.isNotEmpty) _stashedValue[key] = v;
+      if (selectedVariantValueIds.isEmpty) hasVariants = false;
+    }
+    _regenerateDrafts();
+    notifyListeners();
+  }
+
+  /// إخفاء/إظهار خاصية وصفية عن المشتري (تبقى محفوظة للبائع).
+  void setHiddenFromBuyer(String key, bool hidden) {
+    if (hidden) {
+      hiddenFromBuyerKeys.add(key);
+    } else {
+      hiddenFromBuyerKeys.remove(key);
+    }
+    notifyListeners();
+  }
+
+  /// إعادة تسمية خاصية البائع. المفتاح هو الاسم نفسه (كما تُحفظ وتُعرض للمشتري)،
+  /// لذا تُنقل كل الارتباطات (قيم، اختيارات، تركيبات، وحدة) إلى المفتاح الجديد.
+  String? renameAttribute(String oldKey, String newName) {
+    final idx = customAttributeDefs.indexWhere((a) => a.key == oldKey);
+    if (idx < 0) return 'لا يمكن إعادة تسمية خاصية الفئة الرسمية';
+    final name = newName.trim().replaceAll(_illegalKeyChars, ' ').replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (name.isEmpty) return 'اكتب اسم الخاصية';
+    if (name == oldKey) return null;
+    final taken = {
+      ..._categoryAttributes.map((a) => a.key),
+      ..._categoryAttributes.map((a) => a.name),
+      ...customAttributeDefs.where((a) => a.key != oldKey).map((a) => a.key),
+      ...customAttributeDefs.where((a) => a.key != oldKey).map((a) => a.name),
+    };
+    if (taken.contains(name)) return 'هذه الخاصية موجودة بالفعل';
+    final old = customAttributeDefs[idx];
+    customAttributeDefs[idx] = AttributeDefinitionModel(
+      id: 'custom_$name', key: name, name: name, type: old.type, isVariant: old.isVariant,
+      predefinedValues: old.predefinedValues, order: old.order,
+    );
+    T? mv<T>(Map<String, T> m) {
+      if (!m.containsKey(oldKey)) return null;
+      final v = m.remove(oldKey) as T;
+      m[name] = v;
+      return v;
+    }
+    mv(attributeValues);
+    mv(customOptionValues);
+    mv(selectedVariantValueIds);
+    mv(attributeUnits);
+    mv(_stashedSelection);
+    mv(_stashedValue);
+    mv(_removedPredefined);
+    mv(_valueOverrides);
+    if (disabledAttrKeys.remove(oldKey)) disabledAttrKeys.add(name);
+    if (hiddenFromBuyerKeys.remove(oldKey)) hiddenFromBuyerKeys.add(name);
+    for (final d in variantDrafts) {
+      if (d.optionValues.containsKey(oldKey)) {
+        final v = d.optionValues.remove(oldKey)!;
+        d.optionValues[name] = v;
+      }
+    }
+    notifyListeners();
+    return null;
+  }
+
+  /// تعديل نص/لون قيمة. القيم الرسمية تُعدَّل لهذا المنتج فقط (الـ id ثابت فتبقى التركيبات سليمة).
+  String? editOptionValue(String attrKey, String valueId, String newLabel, {String? hex}) {
+    final label = newLabel.trim();
+    if (label.isEmpty) return 'اكتب اسم القيمة';
+    final attr = attributeByKey(attrKey);
+    if (attr == null) return null;
+    final clash = optionValuesFor(attr).any((v) => v.id != valueId && v.label.trim().toLowerCase() == label.toLowerCase());
+    if (clash) return 'هذه القيمة موجودة بالفعل';
+    final custom = customOptionValues[attrKey];
+    final ci = custom?.indexWhere((v) => v.id == valueId) ?? -1;
+    if (ci >= 0) {
+      final old = custom![ci];
+      final wasSpecSelected = attributeValues[attrKey] == old.label;
+      custom[ci] = AttributeOptionValue(id: valueId, label: label, hex: hex ?? old.hex);
+      if (wasSpecSelected) attributeValues[attrKey] = label;
+    } else {
+      final base = attr.predefinedValues.where((v) => v.id == valueId);
+      if (base.isEmpty) return null;
+      final wasSpecSelected = attributeValues[attrKey] == base.first.label;
+      (_valueOverrides[attrKey] ??= {})[valueId] = AttributeOptionValue(id: valueId, label: label, hex: hex ?? base.first.hex);
+      if (wasSpecSelected) attributeValues[attrKey] = label;
+    }
+    notifyListeners();
+    return null;
+  }
+
+  /// حذف قيمة (للمنتج الحالي): المخصّصة تُمسح، والرسمية تُخفى. تُزال التركيبات المرتبطة بها.
+  void removeOptionValue(String attrKey, String valueId) {
+    final attr = attributeByKey(attrKey);
+    final label = attr == null ? null : resolveOptionValue(attr, valueId)?.label;
+    final custom = customOptionValues[attrKey];
+    final removedCustom = custom?.any((v) => v.id == valueId) ?? false;
+    if (removedCustom) {
+      custom!.removeWhere((v) => v.id == valueId);
+    } else {
+      (_removedPredefined[attrKey] ??= {}).add(valueId);
+    }
+    final sel = selectedVariantValueIds[attrKey];
+    if (sel != null) {
+      sel.remove(valueId);
+      if (sel.isEmpty) selectedVariantValueIds.remove(attrKey);
+    }
+    if (label != null && attributeValues[attrKey] == label) attributeValues.remove(attrKey);
+    colorImageUrls.remove(valueId);
+    sizeImageUrls.remove(valueId);
+    otherImageUrls.remove(valueId);
+    if (selectedVariantValueIds.isEmpty) hasVariants = false;
+    _regenerateDrafts();
+    notifyListeners();
+  }
+
+  /// تفعيل/تعطيل قيمة: للخيارات = إتاحتها للمشتري، وللمواصفات = اختيارها كقيمة المنتج.
+  void setValueEnabled(String attrKey, String valueId, bool enabled) {
+    final attr = attributeByKey(attrKey);
+    if (attr == null) return;
+    if (attr.isVariant) {
+      if (isVariantValueSelected(attrKey, valueId) != enabled) {
+        if (enabled && !hasVariants) hasVariants = true;
+        toggleVariantValue(attrKey, valueId);
+      }
+    } else {
+      final label = resolveOptionValue(attr, valueId)?.label;
+      if (label == null) return;
+      setAttributeValue(attrKey, enabled ? label : '');
+    }
+  }
+
+  bool isValueEnabled(String attrKey, String valueId) {
+    final attr = attributeByKey(attrKey);
+    if (attr == null) return false;
+    if (attr.isVariant) return isVariantValueSelected(attrKey, valueId);
+    final label = resolveOptionValue(attr, valueId)?.label;
+    return label != null && attributeValues[attrKey] == label;
+  }
+
+  /// يضيف قيماً لخاصية وصفية دون اختيارها (مكتبة قيم يختار منها البائع).
+  int addSpecValues(String attrKey, List<String> labels) {
+    final attr = attributeByKey(attrKey);
+    final list = customOptionValues.putIfAbsent(attrKey, () => []);
+    final known = attr == null ? list : optionValuesFor(attr);
+    var n = 0;
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    for (var i = 0; i < labels.length; i++) {
+      final l = labels[i].trim();
+      if (l.isEmpty || known.any((v) => v.label.trim().toLowerCase() == l.toLowerCase())) continue;
+      if (list.any((v) => v.label.trim().toLowerCase() == l.toLowerCase())) continue;
+      list.add(AttributeOptionValue(id: 'custom_${stamp}_$i', label: l));
+      n++;
+    }
+    notifyListeners();
+    return n;
+  }
+
+  /// ✅ ألوان جاهزة/مفضلة: تُضاف وتُختار دفعة واحدة (بلا تكرار بالـ hex أو الاسم).
+  int addColors(String attrKey, List<ReadyColor> colors) {
+    final attr = attributeByKey(attrKey);
+    if (attr == null) return 0;
+    var n = 0;
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    for (var i = 0; i < colors.length; i++) {
+      final c = colors[i];
+      final existing = optionValuesFor(attr).where((v) =>
+          (v.hex ?? '').toUpperCase() == c.hex.toUpperCase() || v.label.trim() == c.name.trim());
+      if (existing.isNotEmpty) {
+        // موجود: نختاره فقط إن لم يكن مختاراً.
+        if (!isVariantValueSelected(attrKey, existing.first.id)) {
+          if (!hasVariants) hasVariants = true;
+          selectedVariantValueIds.putIfAbsent(attrKey, () => <String>{}).add(existing.first.id);
+          n++;
+        }
+        continue;
+      }
+      final id = 'custom_${stamp}_$i';
+      customOptionValues.putIfAbsent(attrKey, () => []).add(AttributeOptionValue(id: id, label: c.name, hex: c.hex));
+      if (!hasVariants) hasVariants = true;
+      selectedVariantValueIds.putIfAbsent(attrKey, () => <String>{}).add(id);
+      n++;
+    }
+    _regenerateDrafts();
+    notifyListeners();
+    return n;
+  }
+
+  /// يضيف خاصية بائع من قالب جاهز/مفضلة مع قيمها. يعيد مفتاح الخاصية أو رسالة خطأ عبر [error].
+  ({String? key, String? error}) addAttributeWithValues(String name, String kind, List<String> values,
+      {List<ReadyColor> colors = const [], MeasureUnit? unit}) {
+    final err = addCustomAttribute(name, kind: kind);
+    if (err != null) return (key: null, error: err);
+    final key = customAttributeDefs.last.key;
+    if (kind == 'color') {
+      addColors(key, colors);
+    } else if (kind == 'spec') {
+      addSpecValues(key, values);
+    } else {
+      if (values.isNotEmpty) addVariantValues(key, values, unit: unit);
+    }
+    return (key: key, error: null);
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ✅ مفضلات البائع (القسم 2.4) — حسب الفئة الرئيسية، خاصة وبلا تكرار
+  // ═══════════════════════════════════════════════════════════════════
+  List<AttributeFavorite> favorites = [];
+  bool loadingFavorites = false;
+  String? favoritesError;
+
+  String? get currentRootId => selectedCategory == null ? null : rootCategoryId(selectedCategory!);
+
+  Future<void> loadFavorites() async {
+    final root = currentRootId;
+    if (root == null || sellerId.isEmpty) return;
+    loadingFavorites = true;
+    favoritesError = null;
+    notifyListeners();
+    try {
+      favorites = await favoritesRepo.fetchForRoot(sellerId, root);
+    } catch (e) {
+      favoritesError = 'تعذّر تحميل المفضلات';
+    }
+    loadingFavorites = false;
+    notifyListeners();
+  }
+
+  /// يحفظ خاصية البائع (تعريف + قيم فقط، بلا أسعار/كميات) في مفضلاته. يعيد true عند النجاح.
+  Future<bool> saveAttributeToFavorites(String attrKey) async {
+    final root = currentRootId;
+    final attr = attributeByKey(attrKey);
+    if (root == null || attr == null || sellerId.isEmpty) return false;
+    final isColor = attr.type == AttributeType.colorSwatch;
+    final kind = isColor ? 'color' : (!attr.isVariant ? 'spec' : (attributeUnits.containsKey(attrKey) ? 'measure' : 'options'));
+    final fav = AttributeFavorite(
+      id: AttributeFavorite.buildId(root, 'attribute', attr.name),
+      rootCategoryId: root,
+      type: 'attribute',
+      name: attr.name,
+      kind: kind,
+      unitId: attributeUnits[attrKey]?.id,
+      values: [for (final v in optionValuesFor(attr)) FavoriteValue(v.label, hex: v.hex)],
+    );
+    try {
+      await favoritesRepo.save(sellerId, fav);
+      favorites = [...favorites.where((f) => f.id != fav.id), fav];
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<bool> saveColorToFavorites(String name, String hex) async {
+    final root = currentRootId;
+    if (root == null || sellerId.isEmpty) return false;
+    final fav = AttributeFavorite(
+      id: AttributeFavorite.buildId(root, 'color', name, hex: hex),
+      rootCategoryId: root,
+      type: 'color',
+      name: name,
+      kind: 'color',
+      values: [FavoriteValue(name, hex: hex)],
+    );
+    try {
+      await favoritesRepo.save(sellerId, fav);
+      favorites = [...favorites.where((f) => f.id != fav.id), fav];
+      notifyListeners();
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> deleteFavorite(AttributeFavorite fav) async {
+    try {
+      await favoritesRepo.delete(sellerId, fav.id);
+      favorites = favorites.where((f) => f.id != fav.id).toList();
+      notifyListeners();
+    } catch (_) {}
+  }
+
+  /// يضيف مفضلة للمنتج الحالي (لا تُضاف تلقائياً أبداً — فقط بطلب البائع). null = نجاح.
+  String? applyFavorite(AttributeFavorite fav) {
+    if (fav.isColor) {
+      // اللون المفضّل يذهب لخاصية اللون (الرسمية إن وُجدت وإلا نُنشئها).
+      var colorKey = variantAttributesAvailable.where((a) => a.type == AttributeType.colorSwatch || a.key == 'color').map((a) => a.key).firstOrNull;
+      if (colorKey == null) {
+        final r = addAttributeWithValues('اللون', 'color', const []);
+        if (r.error != null) return r.error;
+        colorKey = r.key;
+      }
+      if (fav.hex != null) addColors(colorKey!, [ReadyColor(fav.name, fav.hex!)]);
+      return null;
+    }
+    final existing = attributeByKey(fav.name);
+    if (existing != null) {
+      // خاصية بنفس الاسم موجودة: ندمج القيم الناقصة بدل التكرار.
+      if (existing.isVariant) {
+        if (fav.kind == 'color') {
+          addColors(existing.key, [for (final v in fav.values) if (v.hex != null) ReadyColor(v.label, v.hex!)]);
+        } else {
+          addVariantValues(existing.key, [for (final v in fav.values) v.label]);
+        }
+      } else {
+        addSpecValues(existing.key, [for (final v in fav.values) v.label]);
+      }
+      return null;
+    }
+    final unit = fav.unitId == null ? null : measureUnitById(fav.unitId!);
+    final r = addAttributeWithValues(
+      fav.name, fav.kind, [for (final v in fav.values) v.label],
+      colors: [for (final v in fav.values) if (v.hex != null) ReadyColor(v.label, v.hex!)], unit: unit,
+    );
+    return r.error;
   }
 
   // ═══════════════════════════════════════════════════════════════════
@@ -677,7 +1107,16 @@ class AddEditProductController extends ChangeNotifier {
         final matches = variantDrafts.where((d) => d._sameOptions(combo));
         if (matches.isNotEmpty) existing = matches.first;
       }
-      newDrafts.add(existing ?? VariantDraft(optionValues: combo, price: basePrice, stock: 0));
+      // ✅ التركيبة الجديدة (قيمة أضافها البائع لاحقاً) تأخذ القيم الموحَّدة إن كانت
+      // مفعّلة، وإلا تبدأ بالسعر الأساسي (إن وُجد) وكمية فارغة. التركيبات الموجودة
+      // تبقى بياناتها كما هي (لا تُفسَد ولا تُستبدل).
+      newDrafts.add(existing ??
+          VariantDraft(
+            optionValues: combo,
+            price: unifyPrice ? _unifiedPrice : basePrice,
+            originalPrice: unifyPrice ? _unifiedOriginal : 0,
+            stock: unifyStock ? _unifiedStock : 0,
+          ));
     }
     variantDrafts = newDrafts;
   }
@@ -686,6 +1125,19 @@ class AddEditProductController extends ChangeNotifier {
 
   /// عند تغيير "السعر الأساسي": الخيارات التي لم يعدّل البائع سعرها يدوياً
   /// (صفر أو تساوي السعر الأساسي السابق) تتبع السعر الجديد تلقائياً.
+  /// السعر المعروض في المراجعة: لمنتج بخيارات = أقل سعر نشط ("من X")، وإلا السعر المكتوب.
+  String get displayPriceText {
+    if (hasVariants && variantDrafts.isNotEmpty) {
+      final prices = variantDrafts.where((d) => d.isActive && d.price > 0).map((d) => d.price).toList();
+      if (prices.isNotEmpty) {
+        final m = prices.reduce((a, b) => a < b ? a : b);
+        final t = m == m.roundToDouble() ? m.round().toString() : m.toString();
+        return prices.toSet().length > 1 ? 'من $t' : t;
+      }
+    }
+    return priceCtrl.text;
+  }
+
   void onBasePriceChanged() {
     final base = double.tryParse(priceCtrl.text.trim()) ?? 0;
     for (final d in variantDrafts) {
@@ -722,6 +1174,80 @@ class AddEditProductController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateDraftOriginalPrice(int index, double value) {
+    if (index < 0 || index >= variantDrafts.length) return;
+    variantDrafts[index].originalPrice = value;
+    notifyListeners();
+  }
+
+  // ═══════════════════════════════════════════════════════════════════
+  //  ✅ توحيد السعر والكمية لكل التركيبات (القسم 4)
+  //  • "هل جميع [الألوان والمقاسات] لها نفس السعر؟" → السعر الأساسي (إلزامي) +
+  //    السعر قبل الخصم (اختياري) يُنسخان لكل تركيبة.
+  //  • "... نفس الكمية؟" → الكمية تُنسخ لكل تركيبة بصورة مستقلة (ليست مخزوناً مشتركاً).
+  //  • إلغاء التفعيل لا يمسح ما في التركيبات؛ التعديل اليدوي ممكن دائماً،
+  //    ولا يُكتب فوق بيانات البائع إلا حين يفعّل التوحيد أو يغيّر القيمة الموحَّدة.
+  // ═══════════════════════════════════════════════════════════════════
+  bool unifyPrice = false;
+  bool unifyStock = false;
+  late final TextEditingController unifiedPriceCtrl;
+  late final TextEditingController unifiedOriginalCtrl;
+  late final TextEditingController unifiedStockCtrl;
+
+  double get _unifiedPrice => double.tryParse(unifiedPriceCtrl.text.trim()) ?? 0;
+  double get _unifiedOriginal => double.tryParse(unifiedOriginalCtrl.text.trim()) ?? 0;
+  int get _unifiedStock => int.tryParse(unifiedStockCtrl.text.trim()) ?? 0;
+
+  /// أسماء الخصائص الاختيارية المضافة فعلاً (التي لها قيم مختارة) — ديناميكية.
+  List<String> get selectedVariantAttrNames => [
+        for (final a in variantAttributesAvailable)
+          if ((selectedVariantValueIds[a.key] ?? const <String>{}).isNotEmpty) a.name,
+      ];
+
+  /// "الألوان" / "الألوان والمقاسات" ... لاستخدامها في نص سؤال التوحيد.
+  String get unifyAttrsPhrase => joinAttrNames(selectedVariantAttrNames);
+
+  void setUnifyPrice(bool v) {
+    unifyPrice = v;
+    if (v) _applyUnifiedPrice();
+    notifyListeners();
+  }
+
+  void setUnifyStock(bool v) {
+    unifyStock = v;
+    if (v) _applyUnifiedStock();
+    notifyListeners();
+  }
+
+  void _applyUnifiedPrice() {
+    final price = _unifiedPrice;
+    final original = _unifiedOriginal;
+    // لا نمسح أسعار البائع بقيمة فارغة: التطبيق فقط عند وجود سعر أساسي صالح.
+    if (price <= 0) return;
+    for (final d in variantDrafts) {
+      d.price = price;
+      d.originalPrice = original > price ? original : 0;
+    }
+  }
+
+  void _applyUnifiedStock() {
+    if (unifiedStockCtrl.text.trim().isEmpty) return;
+    final stock = _unifiedStock;
+    for (final d in variantDrafts) {
+      d.stock = stock;
+    }
+  }
+
+  void onUnifiedPriceChanged() {
+    if (unifyPrice) _applyUnifiedPrice();
+    notifyListeners();
+  }
+
+  void onUnifiedStockChanged() {
+    if (unifyStock) _applyUnifiedStock();
+    notifyListeners();
+  }
+
   // ═══════════════════════════════════════════════════════════════════
   //  الخطوة 5 — المعرض والمراجعة
   // ═══════════════════════════════════════════════════════════════════
@@ -746,6 +1272,30 @@ class AddEditProductController extends ChangeNotifier {
   List<String> itemImageUrls = [];
   final Map<String, String> colorImageUrls = {}; // valueId -> url
   final Map<String, String> sizeImageUrls = {}; // valueId -> url
+  final Map<String, String> otherImageUrls = {}; // valueId -> url (أي خاصية غير اللون والمقاس)
+
+  /// ✅ صورة اختيارية لأي قيمة خيار (لون/مقاس/سعة/...): تُوجَّه للخريطة المناسبة.
+  String? valueImageFor(String attrKey, String valueId) =>
+      attrKey == 'color' ? colorImageUrls[valueId] : (attrKey == 'size' ? sizeImageUrls[valueId] : otherImageUrls[valueId]);
+
+  void setValueImage(String attrKey, String valueId, String url) {
+    if (attrKey == 'color') {
+      colorImageUrls[valueId] = url;
+    } else if (attrKey == 'size') {
+      sizeImageUrls[valueId] = url;
+    } else {
+      otherImageUrls[valueId] = url;
+    }
+    if (!images.contains(url)) images.add(url);
+    notifyListeners();
+  }
+
+  void clearValueImage(String attrKey, String valueId) {
+    colorImageUrls.remove(valueId);
+    sizeImageUrls.remove(valueId);
+    otherImageUrls.remove(valueId);
+    notifyListeners();
+  }
 
   void setHeroUrl(String url) {
     final oldHero = heroUrl;
@@ -759,7 +1309,8 @@ class AddEditProductController extends ChangeNotifier {
     if (oldHero != null && oldHero != url &&
         !itemImageUrls.contains(oldHero) &&
         !colorImageUrls.containsValue(oldHero) &&
-        !sizeImageUrls.containsValue(oldHero)) {
+        !sizeImageUrls.containsValue(oldHero) &&
+        !otherImageUrls.containsValue(oldHero)) {
       images.remove(oldHero);
     }
     notifyListeners();
@@ -856,7 +1407,12 @@ class AddEditProductController extends ChangeNotifier {
         }
         // ✅ السعر والكمية صارا في خطوة الخصائص (نُقلا من المعلومات الأساسية).
         if (hasVariants && variantDrafts.isNotEmpty) {
+          if (unifyPrice && _unifiedPrice <= 0) return 'أدخل السعر الأساسي الموحَّد أو ألغِ التوحيد';
+          if (unifyStock && unifiedStockCtrl.text.trim().isEmpty) return 'أدخل الكمية الموحَّدة أو ألغِ التوحيد';
           if (variantDrafts.any((d) => d.price <= 0)) return 'حدّد سعراً أكبر من صفر لكل خيار';
+          if (variantDrafts.any((d) => d.originalPrice > 0 && d.originalPrice <= d.price)) {
+            return 'السعر قبل الخصم يجب أن يكون أكبر من السعر الأساسي (أو اتركه فارغاً)';
+          }
         } else {
           final price = double.tryParse(priceCtrl.text.trim());
           if (price == null || price <= 0) return 'السعر غير صحيح';
@@ -907,9 +1463,7 @@ class AddEditProductController extends ChangeNotifier {
         final ids = selectedVariantValueIds[attr.key];
         if (ids == null || ids.isEmpty) continue;
         for (final valueId in ids) {
-          final url = attr.key == 'color'
-              ? colorImageUrls[valueId]
-              : (attr.key == 'size' ? sizeImageUrls[valueId] : null);
+          final url = valueImageFor(attr.key, valueId);
           if (url == null || url.trim().isEmpty) continue;
           final role = attr.key == 'color'
               ? GalleryItemRole.color
@@ -987,7 +1541,12 @@ class AddEditProductController extends ChangeNotifier {
       final price = (effectiveHasVariants && activePrices.isNotEmpty)
           ? activePrices.reduce((a, b) => a < b ? a : b)
           : double.parse(priceCtrl.text.trim());
-      final rawOriginal = double.tryParse(originalPriceCtrl.text.trim());
+      double? rawOriginal = double.tryParse(originalPriceCtrl.text.trim());
+      if (effectiveHasVariants) {
+        // سعر قبل الخصم المعروض في القوائم: للتركيبة الأرخص (إن كان لها خصم).
+        final cheapest = variantDrafts.where((d) => d.isActive && d.price == price).toList();
+        rawOriginal = cheapest.isNotEmpty && cheapest.first.originalPrice > price ? cheapest.first.originalPrice : null;
+      }
 
       final product = ProductModel(
         id: existingProduct?.id ?? '',
@@ -1015,7 +1574,14 @@ class AddEditProductController extends ChangeNotifier {
         createdAt: existingProduct?.createdAt ?? DateTime.now(),
         originalPrice: (rawOriginal != null && rawOriginal > price) ? rawOriginal : null,
         categoryId: category.category.id,
-        attributes: Map.of(attributeValues),
+        attributes: {
+          for (final e in attributeValues.entries)
+            if (!hiddenFromBuyerKeys.contains(e.key) && !disabledAttrKeys.contains(e.key) && e.value.trim().isNotEmpty) e.key: e.value,
+        },
+        hiddenAttributes: {
+          for (final e in attributeValues.entries)
+            if (hiddenFromBuyerKeys.contains(e.key) && !disabledAttrKeys.contains(e.key) && e.value.trim().isNotEmpty) e.key: e.value,
+        },
         gallery: gallery,
         optionSets: optionSets,
         hasVariants: effectiveHasVariants,
@@ -1050,7 +1616,8 @@ class AddEditProductController extends ChangeNotifier {
           final sku = VariantRepository.buildSku(productId, product.variantKeys, d.optionValues);
           return ProductVariantModel(
             id: sku, sku: sku, optionValues: d.optionValues,
-            price: d.price, stock: d.stock, isActive: d.isActive,
+            price: d.price, originalPrice: d.originalPrice > d.price ? d.originalPrice : 0,
+            stock: d.stock, isActive: d.isActive,
           );
         }).toList();
         await variantRepo.upsertBatch(productId, variants);
@@ -1067,6 +1634,80 @@ class AddEditProductController extends ChangeNotifier {
     }
   }
 
+  // ═══════════════════════════════════════════════════════════════════
+  //  ✅ المسودة المحلية (راجع product_draft_store.dart)
+  // ═══════════════════════════════════════════════════════════════════
+  bool get hasDraftContent =>
+      nameCtrl.text.trim().isNotEmpty ||
+      shortDescCtrl.text.trim().isNotEmpty ||
+      descCtrl.text.trim().isNotEmpty ||
+      priceCtrl.text.trim().isNotEmpty ||
+      heroUrl != null ||
+      itemImageUrls.isNotEmpty ||
+      images.isNotEmpty ||
+      videoUrlCtrl.text.trim().isNotEmpty ||
+      selectedCategory != null;
+
+  Map<String, dynamic> toDraftMap() => {
+        'name': nameCtrl.text.trim(),
+        'shortDescription': shortDescCtrl.text.trim(),
+        'description': descCtrl.text.trim(),
+        'price': priceCtrl.text.trim(),
+        'originalPrice': originalPriceCtrl.text.trim(),
+        'stock': stockCtrl.text.trim(),
+        'condition': condition,
+        'currency': selectedCurrency.code,
+        'categoryId': selectedCategory?.category.id,
+        'customSubcategory': customSubcategoryLabel,
+        'attributes': Map<String, String>.from(attributeValues),
+        'heroUrl': heroUrl,
+        'itemImageUrls': List<String>.from(itemImageUrls),
+        'images': List<String>.from(images),
+        'videoUrl': videoUrlCtrl.text.trim(),
+        'savedAt': DateTime.now().toIso8601String(),
+      };
+
+  /// يستعيد مسودة محفوظة. يجب استدعاؤها بعد انتهاء تحميل الفئات.
+  Future<void> applyDraft(Map<String, dynamic> m) async {
+    String str(String k) => (m[k] ?? '').toString();
+    List<String> list(String k) =>
+        ((m[k] as List?) ?? const []).map((e) => e.toString()).toList();
+
+    nameCtrl.text = str('name');
+    shortDescCtrl.text = str('shortDescription');
+    descCtrl.text = str('description');
+    priceCtrl.text = str('price');
+    originalPriceCtrl.text = str('originalPrice');
+    stockCtrl.text = str('stock');
+    videoUrlCtrl.text = str('videoUrl');
+    final cond = str('condition');
+    if (cond.isNotEmpty) condition = cond;
+    final cur = kSougaCurrencies.where((c) => c.code == str('currency'));
+    if (cur.isNotEmpty) selectedCurrency = cur.first;
+
+    images = list('images');
+    final hero = m['heroUrl'];
+    heroUrl = (hero is String && hero.isNotEmpty) ? hero : null;
+    itemImageUrls = list('itemImageUrls');
+
+    final catId = m['categoryId'];
+    if (catId is String && catId.isNotEmpty) {
+      final found = CategoryRepository.findById(categoryTree, catId);
+      if (found != null) {
+        await selectCategory(found); // يصفّر القيم المعتمدة على الفئة ثم نعيدها
+        final attrs = m['attributes'];
+        if (attrs is Map) {
+          attributeValues
+            ..clear()
+            ..addAll(attrs.map((k, v) => MapEntry(k.toString(), v.toString())));
+        }
+        final sub = m['customSubcategory'];
+        if (sub is String && sub.trim().isNotEmpty) customSubcategoryLabel = sub.trim();
+      }
+    }
+    notifyListeners();
+  }
+
   @override
   void dispose() {
     nameCtrl.dispose();
@@ -1075,6 +1716,9 @@ class AddEditProductController extends ChangeNotifier {
     priceCtrl.dispose();
     originalPriceCtrl.dispose();
     stockCtrl.dispose();
+    unifiedPriceCtrl.dispose();
+    unifiedOriginalCtrl.dispose();
+    unifiedStockCtrl.dispose();
     videoUrlCtrl.dispose();
     super.dispose();
   }

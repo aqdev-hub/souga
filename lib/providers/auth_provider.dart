@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -44,6 +45,12 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
   int     _authOpDepth    = 0;
   String? _activeUid;
   bool    _syncInProgress = false;
+
+  /// ✅ انشغال عملية الدخول (إيميل/جوجل) دون تغيير status — يبقى LoginScreen
+  /// معروضاً (لا يُستبدل بشاشة تحميل كاملة) فلا تضيع نتيجة العملية ولا الرسائل.
+  bool _busy = false;
+  bool get isBusy => _busy;
+  void _setBusy(bool v) { if (_busy == v) return; _busy = v; notifyListeners(); }
 
   /// بيانات مؤقتة لمستخدم جوجل الجديد الذي لم يختر دوره بعد
   User? _pendingGoogleUser;
@@ -144,9 +151,8 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
   Future<bool> login({required String email, required String password}) async {
     _authOpDepth++;
     try {
-      _status       = AuthStatus.loading;
       _errorMessage = '';
-      notifyListeners();
+      _setBusy(true);
 
       final cred   = await _auth.signInWithEmailAndPassword(
           email: email.trim(), password: password);
@@ -164,7 +170,16 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
         final user = _fromPending(pending, fbUser);
         await _saveCache(user); _enter(user, uid); _writeFsBg(user); return true;
       }
-      final user = await _fetchFs(uid);
+      final UserModel? user;
+      try {
+        user = await _fetchFsStrict(uid);
+      } catch (e) {
+        // فشل الشبكة ≠ «لا يوجد مستند»: لا نُنشئ مستخدماً افتراضياً فوق حساب قائم
+        debugPrint('[Auth] login fetch failed: $e');
+        try { await _auth.signOut(); } catch (_) {}
+        _setErr('تحقق من الاتصال وأعد المحاولة');
+        return false;
+      }
       if (user != null) {
         if (!user.isActive) { await _auth.signOut(); _setErr('تم تعطيل هذا الحساب'); return false; }
         await _saveCache(user); _enter(user, uid); return true;
@@ -179,6 +194,7 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
       _setErr('تحقق من الاتصال وأعد المحاولة'); return false;
     } finally {
       _authOpDepth--;
+      _setBusy(false);
     }
   }
 
@@ -186,33 +202,28 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
   //  يستخدم google_sign_in package — يعمل على Android و iOS و Web
   // ──────────────────────────────────────────────────────────────────────────
   Future<GoogleSignInResult> loginWithGoogle() async {
+    if (_busy) return GoogleSignInResult.cancelled;
     _authOpDepth++;
     try {
-      _status       = AuthStatus.loading;
       _errorMessage = '';
-      notifyListeners();
+      _setBusy(true);
 
-      // 1. تأكد من عدم وجود جلسة سابقة معلقة (يسبب null عند أول محاولة)
-      try { await _googleSignIn.signOut(); } catch (_) {}
+      // 1. جلسة جوجل عالقة تُسبب null/خطأ عند أول محاولة → نمسحها (مع مهلة قصيرة)
+      try { await _googleSignIn.signOut().timeout(const Duration(seconds: 2)); } catch (_) {}
 
-      // 2. فتح نافذة اختيار حساب جوجل
+      // 2. نافذة اختيار الحساب (الواجهة تبقى LoginScreen ويظهر المؤشر على الزر فقط)
       final googleAccount = await _googleSignIn.signIn();
-      if (googleAccount == null) {
-        // المستخدم أغلق نافذة الاختيار
-        _status = AuthStatus.unauthenticated;
-        notifyListeners();
-        return GoogleSignInResult.cancelled;
-      }
+      if (googleAccount == null) return GoogleSignInResult.cancelled;
 
-      // 2. الحصول على بيانات المصادقة
-      final googleAuth = await googleAccount.authentication;
+      // 3. رموز المصادقة + دخول Firebase (بمهلات حتى لا يعلق الزر إلى ما لا نهاية)
+      final googleAuth = await googleAccount.authentication
+          .timeout(const Duration(seconds: 15));
       final credential = GoogleAuthProvider.credential(
         accessToken: googleAuth.accessToken,
         idToken:     googleAuth.idToken,
       );
-
-      // 3. تسجيل الدخول في Firebase
-      final cred   = await _auth.signInWithCredential(credential);
+      final cred = await _auth.signInWithCredential(credential)
+          .timeout(const Duration(seconds: 20));
       final fbUser = cred.user;
       if (fbUser == null) {
         _setErr('تعذر الحصول على بيانات جوجل');
@@ -220,7 +231,7 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
       }
       final uid = fbUser.uid;
 
-      // 4. تحقق من الكاش
+      // 4. كاش محلي → دخول فوري + مزامنة في الخلفية
       final cached = await _loadCache(uid);
       if (cached != null) {
         if (!cached.isActive) {
@@ -232,8 +243,16 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
         return GoogleSignInResult.success;
       }
 
-      // 5. تحقق من Firestore
-      final existing = await _fetchFs(uid);
+      // 5. Firestore (مع مهلة). فشل الشبكة ≠ «مستخدم جديد»
+      final UserModel? existing;
+      try {
+        existing = await _fetchFsStrict(uid);
+      } catch (e) {
+        debugPrint('[Auth] google fetch failed: $e');
+        try { await _auth.signOut(); await _googleSignIn.signOut(); } catch (_) {}
+        _setErr('تحقق من الاتصال بالإنترنت وأعد المحاولة');
+        return GoogleSignInResult.error;
+      }
       if (existing != null) {
         if (!existing.isActive) {
           await _auth.signOut(); await _googleSignIn.signOut();
@@ -244,8 +263,7 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
         return GoogleSignInResult.success;
       }
 
-      // 6. مستخدم جديد — يحتاج اختيار الدور
-      // نُبقي status=pendingRoleSelection حتى لا يُعيد Wrapper لشاشة التسجيل
+      // 6. مستخدم جديد — يحتاج اختيار الدور (LoginScreen يبقى معروضاً)
       _pendingGoogleUser = fbUser;
       _status            = AuthStatus.pendingRoleSelection;
       notifyListeners();
@@ -254,12 +272,23 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
     } on FirebaseAuthException catch (e) {
       _setErr(_arabic(e.code));
       return GoogleSignInResult.error;
+    } on PlatformException catch (e) {
+      debugPrint('[Auth] google platform error: ${e.code} ${e.message}');
+      _setErr(e.code == 'network_error'
+          ? 'تحقق من الاتصال بالإنترنت وأعد المحاولة'
+          : 'تعذر الدخول بجوجل. حدّث خدمات Google Play وحاول مجدداً');
+      return GoogleSignInResult.error;
+    } on TimeoutException {
+      try { await _auth.signOut(); await _googleSignIn.signOut(); } catch (_) {}
+      _setErr('انتهت مهلة الاتصال. تحقق من الإنترنت وأعد المحاولة');
+      return GoogleSignInResult.error;
     } catch (e) {
       debugPrint('[Auth] loginWithGoogle error: $e');
       _setErr('تعذر الدخول بجوجل. حاول مجدداً');
       return GoogleSignInResult.error;
     } finally {
       _authOpDepth--;
+      _setBusy(false);
     }
   }
 
@@ -364,6 +393,7 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
         role: role, phone: phone.trim(), profileImage: profileImage,
         storeName: storeName.trim(), storeDescription: storeDescription.trim(),
         storeLogo: storeLogo, createdAt: DateTime.now(), isActive: true,
+        needsEmailVerification: true, // ← بوابة رمز التأكيد (email_otp_screen)
       );
 
       await _savePending(user);
@@ -451,6 +481,33 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) { return false; }
   }
 
+  // ── تأكيد البريد (OTP) ─────────────────────────────────────────────────────
+  /// يعيد تحميل حساب Firebase ويُرجع true إن كان البريد مؤكَّداً (السيرفر يضبط
+  /// emailVerified عبر Admin SDK). لا يغيّر حالة الواجهة — لتبقى شاشة النجاح ظاهرة.
+  Future<bool> checkEmailVerified() async {
+    try {
+      final fb = _auth.currentUser;
+      if (fb == null) return false;
+      await fb.reload();
+      return _auth.currentUser?.emailVerified ?? false;
+    } catch (e) {
+      debugPrint('[Auth] checkEmailVerified error: $e');
+      return false;
+    }
+  }
+
+  /// يفتح البوابة: يمسح العلم محلياً ويحدّث الكاش فيعرض Wrapper الشاشة الرئيسية.
+  Future<void> completeEmailVerification() async {
+    final u = _currentUser;
+    if (u == null || !u.needsEmailVerification) return;
+    final updated = u.copyWith(needsEmailVerification: false);
+    _currentUser = updated;
+    await _saveCache(updated);
+    notifyListeners();
+    // يُنعش التوكن ليحمل email_verified=true (لا يضر إن فشل)
+    try { await _auth.currentUser?.getIdToken(true); } catch (_) {}
+  }
+
   Future<bool> resetPassword(String email) async {
     try {
       await _auth.sendPasswordResetEmail(email: email.trim());
@@ -528,6 +585,8 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
       storeName:        remote.storeName.isNotEmpty        ? remote.storeName        : local.storeName,
       storeLogo:        remote.storeLogo.isNotEmpty        ? remote.storeLogo        : local.storeLogo,
       storeDescription: remote.storeDescription.isNotEmpty ? remote.storeDescription : local.storeDescription,
+      // لا نعيد إغلاق البوابة بعد أن أكّد المستخدم محلياً
+      needsEmailVerification: remote.needsEmailVerification && local.needsEmailVerification,
     );
   }
 
@@ -542,6 +601,7 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
     storeLogo:        (m['storeLogo']        ?? '').toString(),
     storeDescription: (m['storeDescription'] ?? '').toString(),
     createdAt:        DateTime.now(), isActive: true,
+    needsEmailVerification: m['needsEmailVerification'] == true,
   );
 
   UserModel _minimal(User fb) => UserModel(
@@ -549,6 +609,14 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
     email: fb.email ?? '', role: 'customer',
     createdAt: DateTime.now(), isActive: true,
   );
+
+  /// يُرجع null فقط إن لم يوجد المستند فعلاً؛ يرمي عند فشل الشبكة/المهلة.
+  Future<UserModel?> _fetchFsStrict(String uid) async {
+    final doc = await _firestore.collection('users').doc(uid).get()
+        .timeout(const Duration(seconds: 12));
+    if (doc.exists && doc.data() != null) return UserModel.fromMap(doc.data()!, uid);
+    return null;
+  }
 
   Future<UserModel?> _fetchFs(String uid) async {
     try {
@@ -590,6 +658,7 @@ class AuthProvider extends ChangeNotifier with WidgetsBindingObserver {
         'phone': u.phone, 'profileImage': u.profileImage,
         'storeName': u.storeName, 'storeLogo': u.storeLogo,
         'storeDescription': u.storeDescription,
+        'needsEmailVerification': u.needsEmailVerification,
       }));
     } catch (_) {}
   }

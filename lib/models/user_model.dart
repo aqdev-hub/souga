@@ -14,6 +14,9 @@ class UserModel {
   final String    storeLocation;    // إحداثيات الموقع "lat,lng"
   final bool      isActive;
   final DateTime? createdAt;        // nullable — قد لا يكون موجوداً
+  /// حساب جديد لم يؤكد بريده بعد (يضبطه التطبيق عند التسجيل، ويمسحه السيرفر عند التأكيد).
+  /// الحسابات القديمة بلا هذا الحقل = false فلا تُحجب.
+  final bool      needsEmailVerification;
 
   const UserModel({
     required this.uid,
@@ -28,6 +31,7 @@ class UserModel {
     this.storeLocation    = '',
     this.isActive         = true,
     this.createdAt,
+    this.needsEmailVerification = false,
   });
 
   // ── Getters ──────────────────────────────────────────────────────────────
@@ -68,6 +72,7 @@ class UserModel {
       storeLocation:    (map['storeLocation']    ?? '').toString(),
       isActive:         map['isActive'] != false,
       createdAt:        created,
+      needsEmailVerification: map['needsEmailVerification'] == true,
     );
   }
 
@@ -83,6 +88,8 @@ class UserModel {
     'storeDescription': storeDescription,
     'storeLocation':    storeLocation,
     'isActive':         isActive,
+    // يُكتب فقط حين يكون true (لا نكتب false أبداً من العميل)
+    if (needsEmailVerification) 'needsEmailVerification': true,
     // createdAt يُحفظ كـ string في SharedPreferences
     if (createdAt != null) 'createdAt': createdAt!.toIso8601String(),
   };
@@ -101,6 +108,7 @@ class UserModel {
     String?   storeLocation,
     bool?     isActive,
     DateTime? createdAt,
+    bool?     needsEmailVerification,
   }) => UserModel(
     uid:              uid              ?? this.uid,
     name:             name             ?? this.name,
@@ -114,5 +122,6 @@ class UserModel {
     storeLocation:    storeLocation    ?? this.storeLocation,
     isActive:         isActive         ?? this.isActive,
     createdAt:        createdAt        ?? this.createdAt,
+    needsEmailVerification: needsEmailVerification ?? this.needsEmailVerification,
   );
 }

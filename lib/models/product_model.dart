@@ -52,6 +52,10 @@ class ProductModel {
   /// {} افتراضياً = لا يظهر قسم Specifications إطلاقاً (Conditional Rendering).
   final Map<String, String> attributes;
 
+  /// خصائص وصفية أخفاها البائع عن المشتري (يراها هو فقط عند التعديل).
+  /// منفصلة عن [attributes] فلا تظهر في قسم المواصفات ولا في أي بحث/عرض عام.
+  final Map<String, String> hiddenAttributes;
+
   /// محرك المعرض الكامل (فيديو + صور بأدوارها). [] افتراضياً يعني: استخدم
   /// [images] القديمة كصور Hero/Item عادية (يُبنى تلقائياً عبر [effectiveGallery]).
   final List<GalleryItemModel> gallery;
@@ -114,6 +118,7 @@ class ProductModel {
     this.customSubcategory = '',
     this.categoryId = '',
     this.attributes = const {},
+    this.hiddenAttributes = const {},
     this.gallery = const [],
     this.optionSets = const {},
     this.hasVariants = false,
@@ -160,6 +165,9 @@ class ProductModel {
       attributes: Map<String, String>.from(
         (map['attributes'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
       ),
+      hiddenAttributes: Map<String, String>.from(
+        (map['hiddenAttributes'] as Map?)?.map((k, v) => MapEntry(k.toString(), v.toString())) ?? const {},
+      ),
       gallery: (map['gallery'] as List<dynamic>? ?? const [])
           .map((e) => GalleryItemModel.fromMap(Map<String, dynamic>.from(e as Map)))
           .toList(),
@@ -203,7 +211,9 @@ class ProductModel {
       'condition': condition,
       if (customSubcategory.isNotEmpty) 'customSubcategory': customSubcategory,
       if (categoryId.isNotEmpty) 'categoryId': categoryId,
-      if (attributes.isNotEmpty) 'attributes': attributes,
+      'attributes': attributes, // دائماً: حتى يُمسح ما أُخفي/حُذف عند التعديل
+      // يُكتب دائماً (حتى فارغاً) كي يُمسح عند إظهار خاصية كانت مخفية.
+      'hiddenAttributes': hiddenAttributes,
       if (gallery.isNotEmpty) 'gallery': gallery.map((e) => e.toMap()).toList(),
       if (optionSets.isNotEmpty)
         'optionSets': optionSets.map(

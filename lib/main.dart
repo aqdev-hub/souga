@@ -1,5 +1,7 @@
 // lib/main.dart
 
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:firebase_core/firebase_core.dart';
@@ -13,7 +15,9 @@ import 'providers/onboarding_controller.dart';
 import 'screens/onboarding.dart';
 import 'screens/wrapper.dart';
 import 'services/deep_link_service.dart';
+import 'services/startup_tasks.dart';
 import 'services/theme_service.dart';
+import 'services/update_service.dart';
 import 'utils/app_theme.dart';
 
 void main() async {
@@ -25,10 +29,13 @@ void main() async {
   ));
 
   await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-
+  unawaited(StartupTasks.run());
   // ✅ تفعيل استقبال روابط Deep Link (souga://product/ID)
   // يجب استدعاؤها بعد تهيئة Firebase لأن معالجة الرابط تحتاج Firestore.
   DeepLinkService.init();
+
+  // ✅ قراءة رقم النسخة الفعلي (لنظام التحديث) قبل أي فحص
+  await AppUpdateService.init();
 
   // ✅ هل شاهد المستخدم شاشة الترحيب (Onboarding) من قبل؟
   // تُفحص مرة واحدة فقط عند الإقلاع لتحديد الشاشة الأولى للتطبيق.
@@ -64,7 +71,8 @@ class SougaApp extends StatelessWidget {
           themeMode: themeService.mode,
           builder: (context, child) => Directionality(
             textDirection: TextDirection.rtl,
-            child: child!,
+            // ✅ نافذة "تحديث متاح" تلقائية لكل المستخدمين
+            child: UpdateGate(child: child!),
           ),
           // ✅ أول مرة يُفتح التطبيق فيها: شاشة الترحيب أولاً.
           // بعدها (وفي كل تشغيل لاحق): Wrapper مباشرة كما كان.

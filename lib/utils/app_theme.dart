@@ -32,14 +32,38 @@ class AppTheme {
         displayColor: c.textPrimary,
       ),
       dividerColor: c.divider,
+      // لا يصبح النص بلون الخلفية عند الضغط/التحديد: طبقة الضغط شفافة
+      // (alpha منخفض) فيبقى لون النص ظاهراً دائماً.
+      splashColor: c.primary.withValues(alpha: 0.12),
+      highlightColor: c.primary.withValues(alpha: 0.08),
+      hoverColor: c.primary.withValues(alpha: 0.06),
+      focusColor: c.primary.withValues(alpha: 0.10),
+      textSelectionTheme: TextSelectionThemeData(
+        cursorColor: c.primary,
+        selectionColor: c.accent.withValues(alpha: 0.35),
+        selectionHandleColor: c.accent,
+      ),
+      listTileTheme: ListTileThemeData(
+        iconColor: c.textSecondary,
+        textColor: c.textPrimary,
+        // المحدّد: لون النص يبقى واضحاً فوق خلفية primary الخفيفة
+        selectedColor: brightness == Brightness.dark ? Colors.white : c.primaryDark,
+        selectedTileColor: c.primary.withValues(alpha: 0.12),
+      ),
+      popupMenuTheme: PopupMenuThemeData(
+        color: c.surface,
+        textStyle: TextStyle(color: c.textPrimary),
+      ),
       appBarTheme: AppBarTheme(
-        backgroundColor: c.primary,
+        backgroundColor: brightness == Brightness.dark ? c.primaryDark : c.primary,
         foregroundColor: Colors.white,
         elevation: 0,
         scrolledUnderElevation: 0,
         centerTitle: false,
         shadowColor: Colors.transparent,
         surfaceTintColor: Colors.transparent,
+        actionsIconTheme: const IconThemeData(color: Colors.white),
+        iconTheme: const IconThemeData(color: Colors.white),
         titleTextStyle: const TextStyle(
           color: Colors.white,
           fontSize: 22,
@@ -51,7 +75,9 @@ class AppTheme {
         style: ElevatedButton.styleFrom(
           backgroundColor: c.primary,
           foregroundColor: Colors.white,
-          minimumSize: const Size(double.infinity, 56),
+          disabledForegroundColor: Colors.white70,
+          overlayColor: Colors.white,
+          minimumSize: const Size(64, 52),
           elevation: 0,
           shadowColor: Colors.transparent,
           shape: RoundedRectangleBorder(
@@ -66,11 +92,12 @@ class AppTheme {
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
           foregroundColor: c.primary,
+          overlayColor: c.primary,
           side: BorderSide(
             color: c.border,
             width: 1.4,
           ),
-          minimumSize: const Size(double.infinity, 56),
+          minimumSize: const Size(64, 52),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(18),
           ),
@@ -83,6 +110,7 @@ class AppTheme {
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
           foregroundColor: c.primary,
+          overlayColor: c.primary,
           textStyle: const TextStyle(
             fontWeight: FontWeight.w600,
           ),

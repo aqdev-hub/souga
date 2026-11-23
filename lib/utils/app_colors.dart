@@ -6,17 +6,17 @@ import 'package:flutter/material.dart';
 /// أي شاشة لم تُحوَّل بعد لنظام [SougaColors] الديناميكي أدناه.
 /// الشاشات المُحوَّلة تستخدم `context.colors.xxx` بدلاً من `AppColors.xxx`.
 class AppColors {
-  // اللون القرمزي الدقيق #DC143C
-  static const Color primary = Color(0xFFC8102E);
-  static const Color primaryDark = Color(0xFF8B0E1A);
-  static const Color primaryLight = Color(0xFFE53955);
+  // الأزرق السماوي (الوضع الفاتح)
+  static const Color primary = Color(0xFF1E90FF);
+  static const Color primaryDark = Color(0xFF0D5FBF);
+  static const Color primaryLight = Color(0xFF5CACFF);
 
   // الذهبي الثانوي
   static const Color accent = Color(0xFFD4AF37);
   static const Color accentDark = Color(0xFFB8860B);
 
   // الخلفية
-  static const Color background = Color(0xFFF8F7F5);
+  static const Color background = Color(0xFFF4F9FF);
   static const Color surface = Color(0xFFFFFFFF);
 
   // النصوص
@@ -31,8 +31,8 @@ class AppColors {
   static const Color info = Color(0xFF1976D2);
 
   // الحدود
-  static const Color border = Color(0xFFE8E3DB);
-  static const Color divider = Color(0xFFF2F2F2);
+  static const Color border = Color(0xFFD6E6F5);
+  static const Color divider = Color(0xFFE8F1FA);
 
   // تدرج قرمزي يتلاشى للأسفل
   static const LinearGradient primaryGradient = LinearGradient(
@@ -43,7 +43,7 @@ class AppColors {
 
   // تدرج شفاف للهيدر
   static const LinearGradient headerFadeGradient = LinearGradient(
-    colors: [primaryDark, primary, Color(0x00FAFAFA)],
+    colors: [primaryDark, primary, Color(0x00F4F9FF)],
     begin: Alignment.topCenter,
     end: Alignment.bottomCenter,
     stops: [0.0, 0.70, 1.0],
@@ -115,54 +115,45 @@ class SougaColors extends ThemeExtension<SougaColors> {
         stops: const [0.0, 0.70, 1.0],
       );
 
-  // ── الوضع الفاتح — نفس ألوان AppColors القديمة تماماً ──────────────────
+  // ── الوضع الفاتح — سماوي + أبيض ───────────────────────────────────────
   static const light = SougaColors(
-    primary: Color(0xFFC8102E),
-    primaryDark: Color(0xFF8B0E1A),
-    primaryLight: Color(0xFFE53955),
-
-    // الذهبي
+    primary: Color(0xFF1E90FF),
+    primaryDark: Color(0xFF0D5FBF),
+    primaryLight: Color(0xFF5CACFF),
     accent: Color(0xFFD4AF37),
     accentDark: Color(0xFFB8860B),
-
-    // الخلفيات
-    background: Color(0xFFF8F7F5),
+    background: Color(0xFFF4F9FF),
     surface: Color(0xFFFFFFFF),
-
-    // النصوص
-    textPrimary: Color(0xFF1B1B1B),
-    textSecondary: Color(0xFF666666),
-    textHint: Color(0xFF9E9E9E),
-
-    // الحالات
+    textPrimary: Color(0xFF14202B),
+    textSecondary: Color(0xFF5B6B7A),
+    textHint: Color(0xFF93A1AE),
     success: Color(0xFF2E8B57),
     warning: Color(0xFFF5A623),
     error: Color(0xFFD32F2F),
     info: Color(0xFF1976D2),
-
-    // الحدود
-    border: Color(0xFFE8E3DB),
-    divider: Color(0xFFF2F2F2),
+    border: Color(0xFFD6E6F5),
+    divider: Color(0xFFE8F1FA),
   );
 
-  // ── الوضع الداكن — الأزرق السماوي #1E90FF بدل القرمزي ──────────────────
+  // ── الوضع الداكن — قرمزي ملكي + أسود (مطابق لتصميم الدخول) ───────────
+  //   عنابي عميق #3C010E → #5D0119 → #790122 → #94012D → #A80235 → #BC023D
   static const dark = SougaColors(
-    primary: Color(0xFF1E90FF),
-    primaryDark: Color(0xFF0D5FBF),
-    primaryLight: Color(0xFF5CACFF),
-    accent: Color(0xFFFFB300),
-    accentDark: Color(0xFFF57F17),
-    background: Color(0xFF121212),
-    surface: Color(0xFF1E1E1E),
-    textPrimary: Color(0xFFECECEC),
-    textSecondary: Color(0xFFB0B0B0),
-    textHint: Color(0xFF6E6E6E),
+    primary: Color(0xFFDA0F47),
+    primaryDark: Color(0xFF790122),
+    primaryLight: Color(0xFFFF4D73),
+    accent: Color(0xFFD4AF37),
+    accentDark: Color(0xFFB8860B),
+    background: Color(0xFF0B050A),
+    surface: Color(0xFF121014),
+    textPrimary: Color(0xFFF5F2F3),
+    textSecondary: Color(0xFFB9B2B5),
+    textHint: Color(0xFF7A7377),
     success: Color(0xFF4CAF50),
     warning: Color(0xFFFFA726),
-    error: Color(0xFFEF5350),
+    error: Color(0xFFFF6B7A),
     info: Color(0xFF42A5F5),
-    border: Color(0xFF3A3A3A),
-    divider: Color(0xFF2A2A2A),
+    border: Color(0xFF2E2328),
+    divider: Color(0xFF1F171B),
   );
 
   @override

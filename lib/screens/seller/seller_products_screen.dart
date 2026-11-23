@@ -21,6 +21,7 @@ import '../../utils/search_text.dart';
 import '../../widgets/product_sort_menu.dart';
 import '../../widgets/product/product_gallery_view.dart' show ProductImageFrame;
 import 'product_form_stepper_screen.dart';
+import '../../utils/currencies.dart';
 
 // ── أسماء التصنيفات بالعربية — تُستخدم فقط لبناء سياق إعلان الذكاء الاصطناعي ──
 const List<Map<String, String>> _kSellerProductCategories = [
@@ -230,7 +231,7 @@ class _SellerProductsScreenState extends State<SellerProductsScreen> {
                   ),
                   title: Text(p.name, style: const TextStyle(fontWeight: FontWeight.bold)),
                   subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text('${p.price.toStringAsFixed(2)} ${p.currencySymbol}',
+                    Text('${formatMoney(p.price)} ${p.currencySymbol}',
                         style: TextStyle(color: colors.primary, fontWeight: FontWeight.bold)),
                     Text(p.hasVariants ? 'منتج بمتغيرات' : 'الكمية: ${p.stock}',
                         style: TextStyle(fontSize: 12, color: colors.textSecondary)),

@@ -13,17 +13,13 @@
 //   5. استدعاء endpoint الإرسال الفعلي على السيرفر (souga-server) —
 //      يُستخدم تلقائياً عند نشر منتج جديد، أو يدوياً من لوحة الإدارة.
 //
-// ⚠️ ملاحظة تقنية مهمة: هذا المشروع لا يستخدم حزمة إشعارات محلية
-// (flutter_local_notifications) — فقط firebase_messaging كما اتُّفق عليه
-// صراحة. النتيجة العملية:
-//   - التطبيق بالخلفية أو مغلق: يعرض نظام أندرويد/iOS الإشعار تلقائياً في
-//     شريط الإشعارات (بما فيها صورة المنتج) — سلوك FCM افتراضي، لا كود
-//     إضافي مطلوب له.
-//   - التطبيق مفتوح (foreground): الإشعار يصل عبر onMessage لكن لا يظهر
-//     تلقائياً في شريط النظام (قيد معروف لعدم وجود حزمة محلية) — نكتفي
-//     بتسجيله في السجل هنا؛ يمكن إضافة flutter_local_notifications لاحقاً
-//     إن رغبت لعرضه كإشعار نظام حتى أثناء الاستخدام.
+// ✅ سلوك الإشعارات (نمط فيسبوك):
+//   - التطبيق مغلق/بالخلفية: قناة souga_high (أهمية عالية، تُنشأ في MainActivity.kt)
+//     تجعل الإشعار منبثقاً فوق الشاشة بصوت واهتزاز ثم يبقى في شريط الإشعارات.
+//   - التطبيق مفتوح: بانر منبثق داخلي (InAppBanner) لأن النظام لا يعرض إشعار FCM حينها.
+//   - النقر في كل الحالات: NotificationRouter يفتح المحتوى (منتج/طلبات/محادثة).
 
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -31,18 +27,43 @@ import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
-import 'deep_link_service.dart';
+import '../widgets/in_app_banner.dart';
 import 'api_client.dart';
+import 'notification_router.dart';
 
 class PushNotificationService {
   static const String _serverUrl = ApiClient.serverBaseUrl;
   static bool _listenersAttached = false;
+  static String? _initializedUid;
+  static final Map<String, DateTime> _chatThrottle = {};
+  static const String _guestTopic = 'guests';
+
+  // ─────────────────────────────────────────────────────────────────────────
+  //  موضوع 'guests': كل جهاز ليس عليه حساب مسجَّل (زائر / خرج من حسابه) يشترك فيه،
+  //  فتصله حملات المنتجات الجديدة حتى لو لم يسجّل دخوله أبداً.
+  //  عند تسجيل الدخول يُلغى الاشتراك (رمزه يُحفظ على حسابه) فلا يصله الإشعار مرتين.
+  // ─────────────────────────────────────────────────────────────────────────
+  static Future<void> ensureGuestTopic() async {
+    try {
+      final m = FirebaseMessaging.instance;
+      await m.requestPermission(alert: true, badge: true, sound: true);
+      await m.subscribeToTopic(_guestTopic);
+    } catch (e) {
+      debugPrint('[Push] guest topic error: $e');
+    }
+  }
+
+  static Future<void> _leaveGuestTopic() async {
+    try { await FirebaseMessaging.instance.unsubscribeFromTopic(_guestTopic); } catch (_) {}
+  }
 
   // ─────────────────────────────────────────────────────────────────────────
   //  التهيئة — تُستدعى فور توفّر مستخدم مسجَّل (وليس زائراً)
   // ─────────────────────────────────────────────────────────────────────────
   static Future<void> init({required String uid}) async {
     if (uid.isEmpty || uid == 'guest') { return; }
+    if (_initializedUid == uid) { return; } // Wrapper يُعيد البناء كثيراً — نهيّئ مرة واحدة لكل حساب
+    _initializedUid = uid;
 
     try {
       final messaging = FirebaseMessaging.instance;
@@ -52,6 +73,7 @@ class PushNotificationService {
       );
 
       await _refreshAndSaveToken(uid);
+      unawaited(_leaveGuestTopic());
 
       if (!_listenersAttached) {
         _listenersAttached = true;
@@ -62,9 +84,7 @@ class PushNotificationService {
         });
 
         // إشعار وصل والتطبيق مفتوح — نسجّله فقط (راجع الملاحظة أعلى الملف)
-        FirebaseMessaging.onMessage.listen((message) {
-          debugPrint('[Push] foreground message: ${message.data}');
-        });
+        FirebaseMessaging.onMessage.listen(_handleForeground);
 
         // الضغط على الإشعار والتطبيق كان بالخلفية
         FirebaseMessaging.onMessageOpenedApp.listen(_handleMessageTap);
@@ -108,20 +128,46 @@ class PushNotificationService {
   // ─────────────────────────────────────────────────────────────────────────
   static Future<void> clearToken(String? uid) async {
     if (uid == null || uid.isEmpty || uid == 'guest') { return; }
+    reset();
     try {
       await FirebaseFirestore.instance.collection('users').doc(uid)
           .set({'fcmToken': FieldValue.delete()}, SetOptions(merge: true));
     } catch (e) {
       debugPrint('[Push] clearToken error: $e');
     }
+    // بعد الخروج يبقى الجهاز يستقبل حملات المنتجات كزائر
+    unawaited(ensureGuestTopic());
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  //  إشعار نظام حقيقي لمستخدم محدد (طلب جديد / تحديث حالة / رسالة محادثة).
-  //  يُرسَل عبر /notify-user ويتحقق السيرفر من العلاقة بين المرسل والمستلم.
-  //  "أطلق وانسَ": أي فشل لا يعطّل العملية الأصلية (الإشعار داخل التطبيق
-  //  محفوظ في Firestore على أي حال).
-  // ─────────────────────────────────────────────────────────────────────────
+  static void _handleMessageTap(RemoteMessage message) {
+    final d = message.data;
+    NotificationRouter.open(
+      type: (d['type'] ?? '').toString(),
+      referenceId: (d['referenceId'] ?? '').toString(),
+      productId: (d['productId'] ?? '').toString(),
+    );
+  }
+
+  /// التطبيق مفتوح: بانر منبثق بدل الإشعار الصامت
+  static void _handleForeground(RemoteMessage message) {
+    final n = message.notification;
+    final d = message.data;
+    final title = (n?.title ?? d['title'] ?? '').toString();
+    final body  = (n?.body  ?? d['body']  ?? '').toString();
+    if (title.isEmpty && body.isEmpty) return;
+    InAppBanner.show(
+      title: title.isEmpty ? 'سوجا' : title,
+      body: body,
+      imageUrl: n?.android?.imageUrl ?? n?.apple?.imageUrl,
+      onTap: () => _handleMessageTap(message),
+    );
+  }
+
+  /// يُعاد ضبطه عند تسجيل الخروج ليُهيَّأ الحساب التالي.
+  static void reset() { _initializedUid = null; }
+
+  /// إشعار نظام لمستخدم محدد (طلب جديد / تحديث حالة) عبر /notify-user.
+  /// "أطلق وانسَ": أي فشل لا يعطّل العملية الأصلية.
   static Future<void> sendToUser({
     required String userId,
     required String title,
@@ -148,10 +194,31 @@ class PushNotificationService {
     }
   }
 
-  static void _handleMessageTap(RemoteMessage message) {
-    final productId = message.data['productId'];
-    if (productId != null && productId.toString().trim().isNotEmpty) {
-      DeepLinkService.openProductByIdWhenReady(productId.toString());
+  /// إشعار رسالة محادثة للطرف الآخر (السيرفر يتحقق أن الطرفين في الغرفة).
+  /// مُخنَّق (لكل غرفة مرة كل 15ث) حتى لا تُغرق المستلم ولا تستهلك حد الإرسال.
+  static Future<void> notifyChat({
+    required String receiverId,
+    required String roomId,
+    required String senderName,
+    required String text,
+  }) async {
+    final last = _chatThrottle[roomId];
+    if (last != null && DateTime.now().difference(last).inSeconds < 15) return;
+    _chatThrottle[roomId] = DateTime.now();
+    try {
+      await http.post(
+        Uri.parse('$_serverUrl/notify-user'),
+        headers: await ApiClient.authHeaders(),
+        body: jsonEncode({
+          'userId': receiverId,
+          'title': '💬 $senderName',
+          'body': text.length > 120 ? '${text.substring(0, 120)}…' : text,
+          'type': 'chat',
+          'referenceId': roomId,
+        }),
+      ).timeout(const Duration(seconds: 20));
+    } catch (e) {
+      debugPrint('[Push] notifyChat error: $e');
     }
   }
 

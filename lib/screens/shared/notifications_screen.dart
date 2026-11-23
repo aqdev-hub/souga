@@ -8,10 +8,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../../models/notification_model.dart';
 import '../../providers/auth_provider.dart';
+import '../../services/notification_router.dart';
 import '../../services/notifications_service.dart';
-import '../../services/imagekit_service.dart';
 import '../../utils/app_colors.dart';
-import '../../widgets/product/product_gallery_view.dart';
 
 class NotificationsScreen extends StatelessWidget {
   const NotificationsScreen({super.key});
@@ -82,7 +81,13 @@ class _NotificationCard extends StatelessWidget {
       ),
       onDismissed: (_) => NotificationsService.delete(notification.id),
       child: GestureDetector(
-        onTap: () => NotificationsService.markAsRead(notification.id),
+        onTap: () {
+          NotificationsService.markAsRead(notification.id);
+          NotificationRouter.open(
+            type: notification.type,
+            referenceId: notification.referenceId,
+          );
+        },
         child: Container(
           margin: const EdgeInsets.only(bottom: 8),
           padding: const EdgeInsets.all(14),
@@ -95,7 +100,14 @@ class _NotificationCard extends StatelessWidget {
             boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.04), blurRadius: 6)],
           ),
           child: Row(children: [
-            _leading(color),
+            Container(
+              width: 44, height: 44,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(notification.typeIcon, color: color, size: 22),
+            ),
             const SizedBox(width: 12),
             Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
               Row(children: [
@@ -119,40 +131,6 @@ class _NotificationCard extends StatelessWidget {
           ]),
         ),
       ),
-    );
-  }
-
-  // صورة المنتج إن وُجدت، وإلا أيقونة التطبيق، مع شارة صغيرة بنوع الإشعار.
-  Widget _leading(Color color) {
-    final hasImg = notification.imageUrl.isNotEmpty;
-    return SizedBox(
-      width: 52, height: 52,
-      child: Stack(clipBehavior: Clip.none, children: [
-        Positioned.fill(
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: hasImg
-                ? ProductImageFrame(
-                    url: ImageKitService.thumbnailUrl(notification.imageUrl), blurBackdrop: false)
-                : Image.asset('assets/images/app_icon.png', fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) => Container(
-                          color: color.withValues(alpha: 0.12),
-                          child: Icon(notification.typeIcon, color: color, size: 22),
-                        )),
-          ),
-        ),
-        PositionedDirectional(
-          end: -4, bottom: -4,
-          child: Container(
-            padding: const EdgeInsets.all(3),
-            decoration: BoxDecoration(
-              color: color, shape: BoxShape.circle,
-              border: Border.all(color: Colors.white, width: 1.5),
-            ),
-            child: Icon(notification.typeIcon, color: Colors.white, size: 11),
-          ),
-        ),
-      ]),
     );
   }
 

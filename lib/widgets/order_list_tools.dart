@@ -12,6 +12,7 @@ import '../services/imagekit_service.dart';
 import '../utils/app_colors.dart';
 import '../utils/search_text.dart';
 import 'product/product_gallery_view.dart' show ProductImageFrame;
+import '../utils/currencies.dart';
 
 enum OrderSort { newest, oldest, amountHigh, amountLow, status }
 
@@ -235,7 +236,7 @@ class OrderProductsPreview extends StatelessWidget {
                     maxLines: 2, overflow: TextOverflow.ellipsis,
                     style: const TextStyle(fontWeight: FontWeight.w600, fontSize: 13.5)),
                 const SizedBox(height: 2),
-                Text('الكمية: ${p.quantity} • ${p.price.toStringAsFixed(2)} ${order.currencySymbol}',
+                Text('الكمية: ${p.quantity} • ${formatMoney(p.price)} ${order.currencySymbol}',
                     style: TextStyle(fontSize: 11.5, color: colors.textSecondary)),
                 if (p.variantOptions != null && p.variantOptions!.isNotEmpty)
                   Text(

@@ -1,11 +1,19 @@
 // lib/screens/auth/login_screen.dart
+//
+// شاشة الدخول — الهوية الجديدة (AuthShell: حرير متموّج + بطاقة بحدّ ذهبي) مع:
+//  • دخول جوجل سريع: المؤشر على الزر فقط، والشاشة تبقى معروضة (لا شاشة تحميل كاملة)
+//  • بقاء نتيجة العملية (نافذة اختيار الدور / رسالة الخطأ) لأن الـState لا يُهدم
+//  • تعبئة تلقائية، زر Enter يرسل، إخفاء لوحة المفاتيح بالسحب، وضع داكن عبر context.colors
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:souga/screens/auth/register_screen.dart';
 
 import '../../providers/auth_provider.dart';
+import '../../services/startup_tasks.dart';
 import '../../utils/app_colors.dart';
+import '../../widgets/auth_shell.dart';
 import '../../screens/auth/forgot_password_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -22,73 +30,75 @@ class _LoginScreenState extends State<LoginScreen> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _emailCtrl;
   late final TextEditingController _passCtrl;
+  final _passFocus = FocusNode();
   bool _obscure = true;
+  bool _emailBusy = false;
+  bool _googleBusy = false;
 
   @override
   void initState() {
     super.initState();
     _emailCtrl = TextEditingController(text: widget.prefillEmail   ?? '');
     _passCtrl  = TextEditingController(text: widget.prefillPassword ?? '');
+    // تسخين خادم Render (ينام): يكون جاهزاً حين يطلب المستخدم رمز التحقق
+    StartupTasks.warmUpServer();
   }
 
   @override
   void dispose() {
     _emailCtrl.dispose();
     _passCtrl.dispose();
+    _passFocus.dispose();
     super.dispose();
   }
 
-  Future<void> _login() async {
-    if (!_formKey.currentState!.validate()) return;
+  void _toast(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(
+        content: Text(msg),
+        backgroundColor: context.colors.error,
+        behavior: SnackBarBehavior.floating,
+      ));
+  }
 
-    final auth    = context.read<AuthProvider>();
-    final colors  = context.colors;
+  Future<void> _login() async {
+    if (_emailBusy || _googleBusy) return;
+    if (!_formKey.currentState!.validate()) return;
+    FocusScope.of(context).unfocus();
+
+    final auth = context.read<AuthProvider>();
+    setState(() => _emailBusy = true);
     final success = await auth.login(
       email:    _emailCtrl.text.trim(),
       password: _passCtrl.text,
     );
-
     if (!mounted) return;
-
-    if (!success) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content:         Text(auth.errorMessage),
-          backgroundColor: colors.error,
-        ),
-      );
-    }
+    setState(() => _emailBusy = false);
+    if (!success) _toast(auth.errorMessage);
   }
 
   // ── تسجيل الدخول بجوجل ────────────────────────────────────────────────────
   Future<void> _loginWithGoogle() async {
-    final auth   = context.read<AuthProvider>();
-    final colors = context.colors;
+    if (_emailBusy || _googleBusy) return;
+    FocusScope.of(context).unfocus();
+    HapticFeedback.selectionClick();
+    final auth = context.read<AuthProvider>();
+    setState(() => _googleBusy = true);
     final result = await auth.loginWithGoogle();
-
     if (!mounted) return;
+    setState(() => _googleBusy = false);
 
     switch (result) {
       case GoogleSignInResult.success:
-        // Wrapper سيُعيد التوجيه تلقائياً
-        break;
-
+      case GoogleSignInResult.cancelled:
+        break; // Wrapper يعيد التوجيه / المستخدم ألغى
       case GoogleSignInResult.newUserNeedsRole:
-        // مستخدم جديد — نعرض نافذة اختيار الدور
         await _showRolePickerDialog();
         break;
-
-      case GoogleSignInResult.cancelled:
-        // لا شيء — المستخدم ألغى
-        break;
-
       case GoogleSignInResult.error:
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content:         Text(auth.errorMessage),
-            backgroundColor: colors.error,
-          ),
-        );
+        _toast(auth.errorMessage);
         break;
     }
   }
@@ -239,225 +249,107 @@ class _LoginScreenState extends State<LoginScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return Scaffold(
-      backgroundColor: colors.background,
-      body: SafeArea(
-        child: SingleChildScrollView(
-          child: Column(
-            children: [
-              // ── Header ──────────────────────────────────────────────────────
-              Container(
-                width:   double.infinity,
-                padding: const EdgeInsets.symmetric(vertical: 48),
-                decoration: BoxDecoration(
-                  gradient: colors.headerFadeGradient,
-                ),
-                child: Column(children: [
-                  Container(
-                    width: 100, height: 100,
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [
-                        BoxShadow(
-                          color:      Colors.black.withValues(alpha: 0.3),
-                          blurRadius: 20,
-                          offset:     const Offset(0, 8),
-                        ),
-                      ],
-                    ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(24),
-                      child: Image.asset(
-                        'assets/images/app_icon1.png',
-                        fit: BoxFit.cover,
-                        errorBuilder: (_, __, ___) => Container(
-                          color: colors.primaryDark,
-                          child: const Icon(Icons.storefront_rounded,
-                              size: 60, color: Colors.white),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'Souga',
-                    style: TextStyle(
-                      fontSize: 36, fontWeight: FontWeight.bold,
-                      color: Colors.white, letterSpacing: 3,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(
-                    'Your Local Marketplace',
-                    style: TextStyle(
-                      fontSize: 14,
-                      color: Colors.white.withValues(alpha: 0.9),
-                    ),
-                  ),
-                ]),
+    final anyBusy = _emailBusy || _googleBusy;
+
+    return AuthShell(
+      bottomWave: true,
+      footer: AuthFooterLink(
+        question: 'ليس لديك حساب؟',
+        action: 'إنشاء حساب',
+        onTap: anyBusy ? null : () => Navigator.push(
+            context, MaterialPageRoute(builder: (_) => const RegisterScreen())),
+      ),
+      child: Form(
+        key: _formKey,
+        child: AutofillGroup(
+          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+            Text('مرحباً بعودتك 👋',
+                style: TextStyle(fontSize: 23, fontWeight: FontWeight.w900, color: colors.textPrimary)),
+            const SizedBox(height: 4),
+            Text('سجّل دخولك لمتابعة طلباتك والتسوق',
+                style: TextStyle(fontSize: 14, color: colors.textSecondary)),
+            const SizedBox(height: 22),
+
+            TextFormField(
+              controller: _emailCtrl,
+              enabled: !anyBusy,
+              keyboardType: TextInputType.emailAddress,
+              textInputAction: TextInputAction.next,
+              autofillHints: const [AutofillHints.email],
+              textDirection: TextDirection.ltr,
+              onFieldSubmitted: (_) => _passFocus.requestFocus(),
+              decoration: const InputDecoration(
+                labelText: 'البريد الإلكتروني',
+                prefixIcon: Icon(Icons.mail_outline_rounded),
               ),
+              validator: (v) {
+                final val = v?.trim() ?? '';
+                if (val.isEmpty) return 'أدخل البريد الإلكتروني';
+                if (!val.contains('@') || !val.contains('.')) return 'بريد إلكتروني غير صحيح';
+                return null;
+              },
+            ),
+            const SizedBox(height: 14),
 
-              // ── Form ────────────────────────────────────────────────────────
-              Padding(
-                padding: const EdgeInsets.all(24),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'تسجيل الدخول',
-                        style: TextStyle(
-                          fontSize: 22, fontWeight: FontWeight.bold,
-                          color: colors.textPrimary,
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-
-                      TextFormField(
-                        controller:    _emailCtrl,
-                        keyboardType:  TextInputType.emailAddress,
-                        textDirection: TextDirection.ltr,
-                        decoration: const InputDecoration(
-                          labelText:  'البريد الإلكتروني',
-                          prefixIcon: Icon(Icons.email_outlined),
-                        ),
-                        validator: (v) {
-                          final val = v?.trim() ?? '';
-                          if (val.isEmpty)        return 'أدخل البريد الإلكتروني';
-                          if (!val.contains('@')) return 'بريد إلكتروني غير صحيح';
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 16),
-
-                      TextFormField(
-                        controller:    _passCtrl,
-                        obscureText:   _obscure,
-                        textDirection: TextDirection.ltr,
-                        decoration: InputDecoration(
-                          labelText:  'كلمة المرور',
-                          prefixIcon: const Icon(Icons.lock_outlined),
-                          suffixIcon: IconButton(
-                            icon: Icon(_obscure
-                                ? Icons.visibility_outlined
-                                : Icons.visibility_off_outlined),
-                            onPressed: () =>
-                                setState(() => _obscure = !_obscure),
-                          ),
-                        ),
-                        validator: (v) {
-                          if (v == null || v.isEmpty)
-                            {return 'أدخل كلمة المرور';}
-                          if (v.length < 6) { return 'كلمة المرور قصيرة جداً'; }
-                          return null;
-                        },
-                      ),
-                      const SizedBox(height: 8),
-
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        child: TextButton(
-                          onPressed: () => Navigator.push(
-                            context,
-                            MaterialPageRoute(
-                                builder: (_) => const ForgotPasswordScreen()),
-                          ),
-                          child: const Text('نسيت كلمة المرور؟'),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      Consumer<AuthProvider>(
-                        builder: (_, auth, __) => ElevatedButton(
-                          onPressed: auth.isLoading ? null : _login,
-                          child: auth.isLoading
-                              ? const SizedBox(
-                                  height: 22, width: 22,
-                                  child: CircularProgressIndicator(
-                                      color: Colors.white, strokeWidth: 2))
-                              : const Text('دخول'),
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      // ── فاصل ────────────────────────────────────────────────
-                      Row(children: [
-                        const Expanded(child: Divider()),
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          child: Text('أو',
-                              style:
-                                  TextStyle(color: colors.textSecondary)),
-                        ),
-                        const Expanded(child: Divider()),
-                      ]),
-                      const SizedBox(height: 16),
-
-                      // ── زر Google ────────────────────────────────────────────
-                      Consumer<AuthProvider>(
-                        builder: (_, auth, __) => OutlinedButton(
-                          onPressed: auth.isLoading ? null : _loginWithGoogle,
-                          style: OutlinedButton.styleFrom(
-                            side:         const BorderSide(color: Color(0xFFDDDDDD)),
-                            foregroundColor: colors.textPrimary,
-                            backgroundColor: Colors.white,
-                          ),
-                          child: Row(
-                            mainAxisAlignment: MainAxisAlignment.center,
-                            children: [
-                              // شعار جوجل بالألوان الرسمية (SVG inline بدون package)
-                              SizedBox(
-                                width: 20, height: 20,
-                                child: CustomPaint(painter: _GoogleLogoPainter()),
-                              ),
-                              const SizedBox(width: 12),
-                              const Text(
-                                'الدخول بحساب جوجل',
-                                style: TextStyle(
-                                  fontSize: 15,
-                                  fontWeight: FontWeight.w500,
-                                  color: Colors.black87,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-
-                      OutlinedButton.icon(
-                        onPressed: () =>
-                            context.read<AuthProvider>().loginAsGuest(),
-                        icon:  const Icon(Icons.explore_outlined),
-                        label: const Text('تجربة التطبيق بدون تسجيل'),
-                      ),
-                      const SizedBox(height: 24),
-
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            'ليس لديك حساب؟',
-                            style:
-                                TextStyle(color: colors.textSecondary),
-                          ),
-                          TextButton(
-                            onPressed: () => Navigator.push(
-                              context,
-                              MaterialPageRoute(
-                                  builder: (_) => const RegisterScreen()),
-                            ),
-                            child: const Text('إنشاء حساب'),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
+            TextFormField(
+              controller: _passCtrl,
+              focusNode: _passFocus,
+              enabled: !anyBusy,
+              obscureText: _obscure,
+              textInputAction: TextInputAction.done,
+              autofillHints: const [AutofillHints.password],
+              textDirection: TextDirection.ltr,
+              onFieldSubmitted: (_) => _login(),
+              decoration: InputDecoration(
+                labelText: 'كلمة المرور',
+                prefixIcon: const Icon(Icons.lock_outline_rounded),
+                suffixIcon: IconButton(
+                  tooltip: _obscure ? 'إظهار كلمة المرور' : 'إخفاء كلمة المرور',
+                  icon: Icon(_obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                  onPressed: () => setState(() => _obscure = !_obscure),
                 ),
               ),
-            ],
-          ),
+              validator: (v) {
+                if (v == null || v.isEmpty) return 'أدخل كلمة المرور';
+                if (v.length < 6) return 'كلمة المرور قصيرة جداً';
+                return null;
+              },
+            ),
+
+            Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: TextButton(
+                onPressed: anyBusy ? null : () => Navigator.push(
+                  context, MaterialPageRoute(builder: (_) => const ForgotPasswordScreen())),
+                child: const Text('نسيت كلمة المرور؟'),
+              ),
+            ),
+            const SizedBox(height: 2),
+
+            AuthPrimaryButton(
+              label: 'تسجيل الدخول',
+              busy: _emailBusy,
+              onPressed: anyBusy ? null : _login,
+            ),
+            const SizedBox(height: 18),
+            const AuthOrDivider(),
+            const SizedBox(height: 18),
+
+            AuthOutlineButton(
+              busy: _googleBusy,
+              onPressed: anyBusy ? null : _loginWithGoogle,
+              leading: const SizedBox(width: 24, height: 24, child: CustomPaint(painter: _GoogleLogoPainter())),
+              label: _googleBusy ? 'جاري الاتصال بجوجل…' : 'المتابعة بحساب جوجل',
+            ),
+            const SizedBox(height: 6),
+
+            TextButton.icon(
+              onPressed: anyBusy ? null : () => context.read<AuthProvider>().loginAsGuest(),
+              icon: Icon(Icons.person_rounded, size: 22, color: colors.primaryLight),
+              label: const Text('تصفّح بدون تسجيل', style: TextStyle(fontSize: 15)),
+              style: TextButton.styleFrom(foregroundColor: colors.textPrimary, overlayColor: colors.primary, side: BorderSide.none),
+            ),
+          ]),
         ),
       ),
     );
@@ -532,45 +424,31 @@ class _RoleOption extends StatelessWidget {
   }
 }
 
-// ── شعار جوجل بدون صورة خارجية ───────────────────────────────────────────────
+// ── شعار جوجل (حرف G بألوانه الرسمية، بلا صورة خارجية) ───────────────────────
 class _GoogleLogoPainter extends CustomPainter {
+  const _GoogleLogoPainter();
+
   @override
   void paint(Canvas canvas, Size size) {
     final c = Offset(size.width / 2, size.height / 2);
-    final r = size.width / 2;
-
-    // رسم دائري مبسط بألوان جوجل
-    final colors = [
-      const Color(0xFF4285F4), // أزرق
-      const Color(0xFF34A853), // أخضر
-      const Color(0xFFFBBC05), // أصفر
-      const Color(0xFFEA4335), // أحمر
-    ];
-
-    for (int i = 0; i < 4; i++) {
-      final paint = Paint()
-        ..color = colors[i]
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = r * 0.35;
-      canvas.drawArc(
-        Rect.fromCircle(center: c, radius: r * 0.65),
-        (i * 3.14159 / 2) - 0.3,
-        3.14159 / 2 - 0.15,
-        false,
-        paint,
-      );
-    }
-
-    // "G" المقطوع — الخط الأفقي
-    final bluePaint = Paint()
-      ..color = const Color(0xFF4285F4)
+    final r = size.width / 2 * 0.72;
+    final sw = size.width * 0.2;
+    final rect = Rect.fromCircle(center: c, radius: r);
+    double rad(double d) => d * 3.1415926535 / 180;
+    Paint p(Color col) => Paint()
+      ..color = col
       ..style = PaintingStyle.stroke
-      ..strokeCap = StrokeCap.round
-      ..strokeWidth = r * 0.35;
-    canvas.drawLine(
-      Offset(c.dx, c.dy),
-      Offset(c.dx + r * 0.65, c.dy),
-      bluePaint,
+      ..strokeWidth = sw
+      ..strokeCap = StrokeCap.butt;
+
+    canvas.drawArc(rect, rad(137), rad(90), false, p(const Color(0xFFFBBC05))); // أصفر (يسار)
+    canvas.drawArc(rect, rad(227), rad(95), false, p(const Color(0xFFEA4335))); // أحمر (أعلى)
+    canvas.drawArc(rect, rad(47),  rad(90), false, p(const Color(0xFF34A853))); // أخضر (أسفل)
+    canvas.drawArc(rect, rad(0),   rad(47), false, p(const Color(0xFF4285F4))); // أزرق (يمين)
+    // الشريط الأفقي الأزرق
+    canvas.drawRect(
+      Rect.fromLTWH(c.dx, c.dy - sw / 2, r + sw / 2, sw),
+      Paint()..color = const Color(0xFF4285F4),
     );
   }
 

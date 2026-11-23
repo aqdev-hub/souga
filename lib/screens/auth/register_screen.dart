@@ -8,7 +8,9 @@ import 'package:provider/provider.dart';
 
 import '../../providers/auth_provider.dart';
 import '../../services/imagekit_service.dart';
+import '../../services/startup_tasks.dart';
 import '../../utils/app_colors.dart';
+import '../../widgets/auth_shell.dart';
 
 class RegisterScreen extends StatefulWidget {
   const RegisterScreen({super.key});
@@ -56,6 +58,7 @@ class _RegisterScreenState extends State<RegisterScreen>
   void initState() {
     super.initState();
     _tabCtrl = TabController(length: 2, vsync: this);
+    StartupTasks.warmUpServer(); // تسخين الخادم قبل طلب رمز التأكيد
   }
 
   @override
@@ -198,35 +201,67 @@ class _RegisterScreenState extends State<RegisterScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('إنشاء حساب'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
+    return AuthShell(
+      compact: true,
+      scrollable: false,
+      showBack: true,
+      title: 'إنشاء حساب',
+      child: Column(children: [
+        _tabPills(),
+        const SizedBox(height: 6),
+        Expanded(
+          child: TabBarView(
+            controller: _tabCtrl,
+            children: [_buildCustomerForm(), _buildSellerForm()],
+          ),
         ),
-        bottom: TabBar(
-          controller:           _tabCtrl,
-          indicatorColor:       Colors.white,
-          labelColor:           Colors.white,
-          unselectedLabelColor: Colors.white70,
-          tabs: const [
-            Tab(text: 'مشتري', icon: Icon(Icons.shopping_bag_outlined)),
-            Tab(text: 'بائع',  icon: Icon(Icons.store_outlined)),
-          ],
-        ),
-      ),
-      body: TabBarView(
-        controller: _tabCtrl,
-        children:   [_buildCustomerForm(), _buildSellerForm()],
-      ),
+      ]),
+    );
+  }
+
+  /// اختيار نوع الحساب بأزرار مستديرة (بدل TabBar داخل الـAppBar)
+  Widget _tabPills() {
+    final c = context.colors;
+    return AnimatedBuilder(
+      animation: _tabCtrl.animation ?? _tabCtrl,
+      builder: (_, __) {
+        Widget pill(int i, String t, IconData ic) {
+          final sel = _tabCtrl.index == i;
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => _tabCtrl.animateTo(i),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                height: 46,
+                decoration: BoxDecoration(
+                  gradient: sel ? LinearGradient(colors: [c.primary, c.primaryDark]) : null,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: sel ? c.accent.withValues(alpha: 0.8) : c.border),
+                ),
+                child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Icon(ic, size: 19, color: sel ? Colors.white : c.textSecondary),
+                  const SizedBox(width: 8),
+                  Text(t, style: TextStyle(
+                      fontWeight: FontWeight.w800, fontSize: 14.5,
+                      color: sel ? Colors.white : c.textSecondary)),
+                ]),
+              ),
+            ),
+          );
+        }
+        return Row(children: [
+          pill(0, 'مشتري', Icons.shopping_bag_outlined),
+          const SizedBox(width: 10),
+          pill(1, 'بائع', Icons.storefront_outlined),
+        ]);
+      },
     );
   }
 
   Widget _buildCustomerForm() {
     final colors = context.colors;
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(2, 14, 2, 8),
       child: Form(
         key: _cFormKey,
         child: Column(
@@ -278,7 +313,7 @@ class _RegisterScreenState extends State<RegisterScreen>
   Widget _buildSellerForm() {
     final colors = context.colors;
     return SingleChildScrollView(
-      padding: const EdgeInsets.all(24),
+      padding: const EdgeInsets.fromLTRB(2, 14, 2, 8),
       child: Form(
         key: _sFormKey,
         child: Column(

@@ -26,9 +26,28 @@ class ChatService {
   }) async {
     final id = roomId(myUid, otherUid);
     final ref = _fs.collection('chat_rooms').doc(id);
-    final doc = await ref.get();
 
-    if (!doc.exists) {
+    // قراءة مستند غير موجود كانت تُرفض بقواعد Firestore (resource == null) فيفشل فتح
+    // المحادثة بصمت لأول مرة بين طرفين. نعتبر الفشل = "غير موجود" ثم ننشئ بأمان.
+    bool exists = false;
+    bool readFailed = false;
+    try {
+      exists = (await ref.get()).exists;
+    } on FirebaseException {
+      readFailed = true;
+    }
+
+    if (readFailed) {
+      // قد تكون الغرفة موجودة فعلاً: ندمج بيانات المشاركين فقط (لا نصفّر آخر رسالة/غير المقروء)
+      await ref.set({
+        'participants':      [myUid, otherUid],
+        'participantNames':  {myUid: myName, otherUid: otherName},
+        'participantImages': {myUid: myImage, otherUid: otherImage},
+      }, SetOptions(merge: true));
+      return id;
+    }
+
+    if (!exists) {
       await ref.set({
         'participants':       [myUid, otherUid],
         'participantNames':   {myUid: myName,  otherUid: otherName},
@@ -78,15 +97,9 @@ class ChatService {
 
     await batch.commit();
 
-    // ✅ إشعار نظام للطرف الآخر برسالة جديدة (بدون انتظار ولا تعطيل الإرسال)
-    final preview = text.trim();
-    unawaited(PushNotificationService.sendToUser(
-      userId: receiverId,
-      title: senderName.isEmpty ? 'رسالة جديدة' : senderName,
-      body: preview.length > 120 ? '${preview.substring(0, 120)}…' : preview,
-      type: 'chat',
-      referenceId: roomId,
-    ));
+    // إشعار منبثق للطرف الآخر (لا ينتظر ولا يُفشل الإرسال)
+    unawaited(PushNotificationService.notifyChat(
+      receiverId: receiverId, roomId: roomId, senderName: senderName, text: text.trim()));
   }
 
   /// تعليم الرسائل كمقروءة

@@ -28,8 +28,11 @@ import '../../models/category_model.dart';
 import '../../models/product_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../services/imagekit_service.dart';
+import '../../services/product_draft_store.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/currencies.dart';
+import '../../widgets/attribute_manager_sheet.dart';
+import '../../widgets/product_form_widgets.dart';
 
 const List<String> _kVisualStepLabels = ['المعلومات الأساسية', 'الخصائص', 'الصور', 'النشر'];
 
@@ -58,6 +61,55 @@ class _ProductFormStepperScreenState extends State<ProductFormStepperScreen> {
       existingProduct: widget.product,
     );
     _controller.addListener(_maybeHydrateVariants);
+    // ✅ منتج جديد فقط: اعرض استعادة المسودة المحفوظة (إن وُجدت)
+    if (widget.product == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _offerDraft());
+    }
+  }
+
+  String get _uid => context.read<AuthProvider>().currentUser?.uid ?? '';
+  bool _draftSaved = false; // لتفادي سؤال الخروج بعد حفظ المسودة
+
+  Future<void> _offerDraft() async {
+    final uid = _uid;
+    if (uid.isEmpty) return;
+    final draft = await ProductDraftStore.load(uid);
+    if (draft == null || !mounted) return;
+    final name = (draft['name'] ?? '').toString();
+    final choice = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: const Text('لديك مسودة محفوظة'),
+        content: Text(name.isNotEmpty
+            ? 'هل تريد متابعة العمل على "$name"؟'
+            : 'هل تريد متابعة العمل على مسودتك السابقة؟'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'delete'),
+            child: Text('حذف المسودة', style: TextStyle(color: ctx.colors.error)),
+          ),
+          TextButton(onPressed: () => Navigator.pop(ctx, 'new'), child: const Text('بدء جديد')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, 'restore'), child: const Text('استعادة')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'delete') {
+      await ProductDraftStore.clear(uid);
+    } else if (choice == 'restore') {
+      // ننتظر انتهاء تحميل الفئات (حدّ أقصى ~10 ثوانٍ)
+      for (var i = 0; i < 100 && _controller.loadingCategories; i++) {
+        await Future.delayed(const Duration(milliseconds: 100));
+        if (!mounted) return;
+      }
+      await _controller.applyDraft(draft);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('تمت استعادة المسودة')),
+        );
+      }
+    }
   }
 
   Future<void> _maybeHydrateVariants() async {
@@ -170,15 +222,66 @@ class _ProductFormStepperScreenState extends State<ProductFormStepperScreen> {
     if (_visualStep > 0) setState(() => _visualStep--);
   }
 
-  void _saveDraftStub() {
-    // ⚠️ ميزة "المسودات" غير مُنفَّذة بعد فعلياً (تتطلب حقل status على
-    // ProductModel + تصفية كل استعلامات المنتجات العامة لإخفاء المسودات
-    // عن المشترين — تغيير أوسع يمسّ شاشات متعددة، مؤجَّل عمداً لتفادي خطر
-    // تسريب منتج غير مكتمل للمتجر قبل التحقق الكامل من هذا المسار). الزر
-    // موجود بصرياً مطابقةً للتصميم المعتمد، لكنه لا يكتب شيئاً حالياً.
-    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
-      content: Text('ميزة حفظ المسودات قادمة قريباً'),
-    ));
+  /// ✅ حفظ كمسودة (محلياً على الجهاز) — للمنتجات الجديدة فقط.
+  Future<void> _saveDraft() async {
+    final colors = context.colors;
+    final messenger = ScaffoldMessenger.of(context);
+    if (_controller.isEditing) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('المسودات للمنتجات الجديدة فقط. استخدم "حفظ التعديلات" لهذا المنتج.'),
+      ));
+      return;
+    }
+    if (!_controller.hasDraftContent) {
+      messenger.showSnackBar(const SnackBar(
+        content: Text('أدخل بيانات المنتج أو أضف صورة قبل الحفظ كمسودة'),
+      ));
+      return;
+    }
+    final ok = await ProductDraftStore.save(_uid, _controller.toDraftMap());
+    if (!mounted) return;
+    if (ok) {
+      _draftSaved = true;
+      messenger.showSnackBar(SnackBar(
+        content: const Text('💾 تم حفظ المسودة على هذا الجهاز — ستجدها عند فتح "إضافة منتج"'),
+        backgroundColor: colors.success,
+      ));
+    } else {
+      messenger.showSnackBar(SnackBar(
+        content: const Text('تعذّر حفظ المسودة'),
+        backgroundColor: colors.error,
+      ));
+    }
+  }
+
+  /// إغلاق الشاشة: إن كان هناك عمل غير محفوظ في منتج جديد نسأل أولاً.
+  Future<void> _handleClose() async {
+    if (_controller.isEditing || _draftSaved || !_controller.hasDraftContent) {
+      Navigator.pop(context);
+      return;
+    }
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('حفظ كمسودة؟'),
+        content: const Text('لديك بيانات غير منشورة. يمكنك حفظها كمسودة والعودة لها لاحقاً.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, 'discard'),
+            child: Text('تجاهل', style: TextStyle(color: ctx.colors.error)),
+          ),
+          TextButton(onPressed: () => Navigator.pop(ctx, 'stay'), child: const Text('متابعة التعديل')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, 'save'), child: const Text('حفظ كمسودة')),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (choice == 'save') {
+      await _saveDraft();
+      if (mounted && _draftSaved) Navigator.pop(context);
+    } else if (choice == 'discard') {
+      Navigator.pop(context);
+    }
   }
 
   Future<void> _submit() async {
@@ -186,6 +289,8 @@ class _ProductFormStepperScreenState extends State<ProductFormStepperScreen> {
     final success = await _controller.save();
     if (!mounted) return;
     if (success) {
+      if (!_controller.isEditing) await ProductDraftStore.clear(_uid);
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(
         content: Text(_controller.isEditing ? '✅ تم حفظ التعديلات' : '✅ تم نشر المنتج'),
         backgroundColor: colors.success,
@@ -202,13 +307,18 @@ class _ProductFormStepperScreenState extends State<ProductFormStepperScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _handleClose();
+      },
+      child: Scaffold(
       backgroundColor: colors.background,
       appBar: AppBar(
         title: Text(_controller.isEditing ? 'تعديل المنتج' : 'إضافة منتج'),
         leading: IconButton(
           icon: const Icon(Icons.close),
-          onPressed: () => Navigator.pop(context),
+          onPressed: _handleClose,
         ),
       ),
       body: AnimatedBuilder(
@@ -248,10 +358,11 @@ class _ProductFormStepperScreenState extends State<ProductFormStepperScreen> {
               isEditing: _controller.isEditing,
               onPrevious: _handlePrevious,
               onNext: _handleNext,
-              onSaveDraft: _saveDraftStub,
+              onSaveDraft: _saveDraft,
             ),
           ]);
         },
+      ),
       ),
     );
   }
@@ -734,34 +845,14 @@ class _BasicInfoStepState extends State<_BasicInfoStep> {
   }
 }
 
-/// اختيار العملة — دالة مشتركة (كانت داخل خطوة المعلومات الأساسية).
-void _showCurrencyPickerSheet(BuildContext context, AddEditProductController controller) {
-  showModalBottomSheet(
-    context: context,
-    isScrollControlled: true,
-    builder: (ctx) => SafeArea(
-      child: SizedBox(
-        height: 420,
-        child: ListView.builder(
-          itemCount: kSougaCurrencies.length,
-          itemBuilder: (_, i) {
-            final c = kSougaCurrencies[i];
-            return ListTile(
-              leading: Text(c.symbol, style: const TextStyle(fontSize: 16)),
-              title: Text(c.name),
-              subtitle: Text(c.code),
-              onTap: () { controller.setCurrency(c); Navigator.pop(ctx); },
-            );
-          },
-        ),
-      ),
-    ),
-  );
+/// اختيار العملة — قائمة منسدلة ببحث ذكي (عربي/إنجليزي/رمز). تُغلق بعد اختيار عملة واحدة.
+Future<void> _showCurrencyPickerSheet(BuildContext context, AddEditProductController controller) async {
+  final picked = await showCurrencyPicker(context, selected: controller.selectedCurrency);
+  if (picked != null) controller.setCurrency(picked);
 }
 
-/// ✅ بطاقة السعر والمخزون — نُقلت من خطوة "المعلومات الأساسية" إلى خطوة
-/// "الخصائص" لأن السعر يتبع الخيارات: بلا خيارات = سعر واحد وكمية واحدة،
-/// ومع خيارات (لون/مقاس...) يُحدَّد سعر وكمية لكل خيار في الأسفل.
+/// ✅ بطاقة السعر والمخزون. منتج بلا خيارات: سعر + سعر قبل الخصم + كمية (مع كتابتها
+/// بالحروف). منتج بخيارات: تبقى العملة هنا، والسعر والكمية في قسم "سعر وكمية كل خيار".
 class _PricingStockCard extends StatelessWidget {
   final AddEditProductController controller;
   const _PricingStockCard({required this.controller});
@@ -770,79 +861,86 @@ class _PricingStockCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = context.colors;
     final hasVariants = controller.hasVariants && controller.variantDrafts.isNotEmpty;
+
+    final currencyField = Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const Text('العملة', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+      const SizedBox(height: 6),
+      InkWell(
+        borderRadius: BorderRadius.circular(14),
+        onTap: () => _showCurrencyPickerSheet(context, controller),
+        child: Container(
+          height: 48,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(border: Border.all(color: colors.border), borderRadius: BorderRadius.circular(14)),
+          child: Row(children: [
+            Text(controller.selectedCurrency.symbol, style: const TextStyle(fontWeight: FontWeight.w800)),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                '${controller.selectedCurrency.name} (${controller.selectedCurrency.code})',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 13.5),
+              ),
+            ),
+            const Icon(Icons.keyboard_arrow_down_rounded, size: 22),
+          ]),
+        ),
+      ),
+    ]);
+
     return _SectionCard(
       title: 'السعر والمخزون',
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            Expanded(
-              flex: 3,
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                _requiredLabel(context, hasVariants ? 'السعر الأساسي' : 'السعر'),
-                const SizedBox(height: 6),
-                TextField(
-                  controller: controller.priceCtrl,
-                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                  textDirection: TextDirection.ltr,
-                  onChanged: (_) => controller.onBasePriceChanged(),
-                  decoration: const InputDecoration(isDense: true),
-                ),
-              ]),
-            ),
-            const SizedBox(width: 8),
-            Expanded(
-              flex: 2,
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const Text('العملة', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                const SizedBox(height: 6),
-                GestureDetector(
-                  onTap: () => _showCurrencyPickerSheet(context, controller),
-                  child: Container(
-                    height: 48,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    decoration: BoxDecoration(border: Border.all(color: colors.border), borderRadius: BorderRadius.circular(14)),
-                    child: Row(children: [
-                      Text(controller.selectedCurrency.symbol),
-                      const SizedBox(width: 6),
-                      Expanded(child: Text(controller.selectedCurrency.code, overflow: TextOverflow.ellipsis)),
-                      const Icon(Icons.keyboard_arrow_down_outlined, size: 16),
-                    ]),
-                  ),
-                ),
-              ]),
-            ),
-          ]),
+        currencyField,
+        const SizedBox(height: 16),
+        if (!hasVariants) ...[
+          _requiredLabel(context, 'السعر'),
+          const SizedBox(height: 6),
+          TextField(
+            controller: controller.priceCtrl,
+            keyboardType: TextInputType.number,
+            inputFormatters: kIntegerOnlyFormatters,
+            textDirection: TextDirection.ltr,
+            onChanged: (_) => controller.onBasePriceChanged(),
+            decoration: const InputDecoration(isDense: true),
+          ),
+          NumberWordsHint(controller: controller.priceCtrl),
           const SizedBox(height: 16),
-
           Text('السعر قبل الخصم (اختياري)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: colors.textPrimary)),
           const SizedBox(height: 6),
           TextField(
             controller: controller.originalPriceCtrl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            keyboardType: TextInputType.number,
+            inputFormatters: kIntegerOnlyFormatters,
             textDirection: TextDirection.ltr,
             decoration: const InputDecoration(isDense: true),
           ),
+          NumberWordsHint(controller: controller.originalPriceCtrl),
           const SizedBox(height: 16),
-
-          if (!controller.hasVariants) ...[
-            _requiredLabel(context, 'الكمية المتوفرة'),
-            const SizedBox(height: 6),
-            TextField(
-              controller: controller.stockCtrl,
-              keyboardType: TextInputType.number,
-              decoration: const InputDecoration(hintText: 'أدخل الكمية', isDense: true),
-            ),
-            const SizedBox(height: 16),
-          ] else
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(color: colors.primary.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(10)),
-              child: Row(children: [
-                Icon(Icons.info_outline, size: 15, color: colors.primary),
-                const SizedBox(width: 6),
-                Expanded(child: Text('الكمية والسعر يُحدَّدان لكل خيار في القسم أدناه',
-                    style: TextStyle(fontSize: 11.5, color: colors.primary))),
-              ]),
-            ),
+          _requiredLabel(context, 'الكمية المتوفرة'),
+          const SizedBox(height: 6),
+          TextField(
+            controller: controller.stockCtrl,
+            keyboardType: TextInputType.number,
+            inputFormatters: kIntegerOnlyFormatters,
+            textDirection: TextDirection.ltr,
+            decoration: const InputDecoration(hintText: 'أدخل الكمية', isDense: true),
+          ),
+          NumberWordsHint(controller: controller.stockCtrl),
+        ] else
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(color: colors.primary.withValues(alpha: 0.06), borderRadius: BorderRadius.circular(10)),
+            child: Row(children: [
+              Icon(Icons.info_outline, size: 15, color: colors.primary),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text('السعر والكمية يُحدَّدان في قسم "سعر وكمية كل خيار" أدناه',
+                    style: TextStyle(fontSize: 11.5, color: colors.primary)),
+              ),
+            ]),
+          ),
       ]),
     );
   }
@@ -988,6 +1086,12 @@ class _AttributesStepState extends State<_AttributesStep> {
     super.dispose();
   }
 
+  static final ButtonStyle _compactBtn = OutlinedButton.styleFrom(
+    minimumSize: const Size(0, 36),
+    padding: const EdgeInsets.symmetric(horizontal: 14),
+    visualDensity: VisualDensity.compact,
+  );
+
   Color _parseHex(String? hex) {
     if (hex == null || hex.isEmpty) return Colors.grey;
     final clean = hex.replaceAll('#', '');
@@ -1000,7 +1104,8 @@ class _AttributesStepState extends State<_AttributesStep> {
     var kind = 'options';
     String? error;
     const kinds = <String, (String, String)>{
-      'options': ('خيارات للمشتري', 'مثل: الحجم، الرام، التخزين، الموديل — لكل خيار سعر وكمية'),
+      'options': ('خيارات للمشتري', 'مثل: الرام، التخزين، الموديل، المقاس — لكل خيار سعر وكمية'),
+      'measure': ('قياس بوحدة', 'مثل: الحجم 5، 7، 12 لتر أو الوزن أو الطول — اختر الوحدة مرة واحدة وأضف عدة قيم'),
       'color': ('ألوان', 'عينات ألوان بدوائر ملوّنة — لكل لون سعر وكمية'),
       'spec': ('مواصفة ثابتة', 'مثل: بلد الصنع، الخامة — لا تؤثر على السعر أو الكمية'),
     };
@@ -1042,6 +1147,11 @@ class _AttributesStepState extends State<_AttributesStep> {
                   return;
                 }
                 Navigator.pop(ctx);
+                // خاصية جديدة: افتح إدخال القيم فوراً ثم اسأل عن حفظها في المفضلة.
+                final created = widget.controller.customAttributeDefs.last;
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) _afterCustomAttributeCreated(kind, created);
+                });
               },
               child: const Text('إضافة'),
             ),
@@ -1049,6 +1159,38 @@ class _AttributesStepState extends State<_AttributesStep> {
         ),
       ),
     );
+  }
+
+  Future<void> _afterCustomAttributeCreated(String kind, AttributeDefinitionModel created) async {
+    final c = widget.controller;
+    if (kind == 'color') {
+      await showReadyColorsSheet(context, c, created.key);
+    } else if (kind == 'spec') {
+      final res = await showAddValuesDialog(context, attrName: created.name, allowUnit: false);
+      if (res != null) c.addSpecValues(created.key, res.labels);
+    } else {
+      await _showAddValuesSheet(context, created);
+    }
+    if (!mounted) return;
+    await promptSaveAttributeFavorite(context, c, created.key);
+  }
+
+  /// ✅ إضافة عدة قيم لخاصية اختيارية دفعة واحدة، بوحدة قياس واحدة اختيارية
+  /// (5، 7، 12 + لتر → ثلاثة خيارات) أو بلا وحدة (S، M، L / 38، 40).
+  Future<void> _showAddValuesSheet(BuildContext context, AttributeDefinitionModel attr) async {
+    final c = widget.controller;
+    final res = await showAddValuesDialog(
+      context,
+      attrName: attr.name,
+      initialUnit: c.attributeUnits[attr.key],
+      existingLabels: c.existingValueLabels(attr.key),
+    );
+    if (res == null || !mounted) return;
+    final n = c.addVariantValues(attr.key, res.labels, unit: res.unit);
+    if (!mounted) return;
+    ScaffoldMessenger.of(this.context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text('تمت إضافة $n ${n == 1 ? 'قيمة' : 'قيم'} إلى ${attr.name}')));
   }
 
   /// ✅ قيمة جديدة لخاصية "مواصفة" (وصفية): تُضاف كشريحة وتُختار فوراً.
@@ -1077,64 +1219,6 @@ class _AttributesStepState extends State<_AttributesStep> {
     ).then((_) => ctrl.dispose());
   }
 
-  // ✅ جديد — "+ لون آخر" / "+ مقاس آخر" / إلخ (مطابقة التصميم المعتمد):
-  // يفتح حواراً لإضافة قيمة خيار خاصة بهذا المنتج تحديداً (راجع
-  // AddEditProductController.addCustomOptionValue). خاصية اللون تعرض
-  // أيضاً لوحة ألوان صغيرة لاختيار hex تمثيلي (اختياري).
-  void _showAddCustomOptionValueDialog(BuildContext context, AttributeDefinitionModel attr) {
-    final labelCtrl = TextEditingController();
-    final isColor = attr.type == AttributeType.colorSwatch || attr.key == 'color';
-    String? selectedHex;
-    const palette = [
-      '#111111', '#FFFFFF', '#8B4513', '#FFC0CB', '#800080',
-      '#FFA500', '#FFD700', '#008080', '#A52A2A', '#708090',
-    ];
-
-    showDialog(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setDialogState) => AlertDialog(
-          title: Text(widget.controller.isCustomAttribute(attr.key) ? 'إضافة ${attr.name}' : '${attr.name} آخر'),
-          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            TextField(
-              controller: labelCtrl,
-              decoration: InputDecoration(hintText: 'اكتب ${attr.name} الجديد'),
-            ),
-            if (isColor) ...[
-              const SizedBox(height: 14),
-              const Text('اختر لوناً تقريبياً (اختياري)', style: TextStyle(fontSize: 12)),
-              const SizedBox(height: 8),
-              Wrap(spacing: 8, runSpacing: 8, children: palette.map((hex) {
-                final selected = selectedHex == hex;
-                return GestureDetector(
-                  onTap: () => setDialogState(() => selectedHex = hex),
-                  child: Container(
-                    width: 30, height: 30,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: _parseHex(hex),
-                      border: Border.all(color: selected ? Colors.black : Colors.black26, width: selected ? 2.4 : 1),
-                    ),
-                  ),
-                );
-              }).toList()),
-            ],
-          ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('إلغاء')),
-            ElevatedButton(
-              onPressed: () {
-                widget.controller.addCustomOptionValue(attr.key, labelCtrl.text, hex: isColor ? selectedHex : null);
-                Navigator.pop(ctx);
-              },
-              child: const Text('إضافة'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   /// ✅ خاصية العلامة التجارية: عرض خاص (بحث ضمن الاقتراحات + إدخال يدوي)
   /// مطابق تماماً للتصميم المعتمد — مختلف عن بقية الخصائص النصية العادية.
   Widget _buildBrandField(BuildContext context, AttributeDefinitionModel attr) {
@@ -1147,6 +1231,7 @@ class _AttributesStepState extends State<_AttributesStep> {
 
     return _AttributeBlock(
       attr: attr,
+      controller: controller,
       requiredMark: false,
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         TextField(
@@ -1213,6 +1298,7 @@ class _AttributesStepState extends State<_AttributesStep> {
             final isCustomAttr = controller.isCustomAttribute(attr.key);
             return _AttributeBlock(
               attr: attr,
+              controller: controller,
               requiredMark: !isCustomAttr,
               onRemove: isCustomAttr ? () => controller.removeCustomAttribute(attr.key) : null,
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1239,16 +1325,28 @@ class _AttributesStepState extends State<_AttributesStep> {
                   }).toList(),
                 ),
                 const SizedBox(height: 10),
-                OutlinedButton.icon(
-                  onPressed: () => _showAddCustomOptionValueDialog(context, attr),
-                  icon: const Icon(Icons.add, size: 16),
-                  label: Text(isCustomAttr ? 'إضافة ${attr.name}' : '${attr.name} آخر'),
-                  style: OutlinedButton.styleFrom(
-                    minimumSize: const Size(0, 36),
-                    padding: const EdgeInsets.symmetric(horizontal: 14),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  if (isColor) ...[
+                    OutlinedButton.icon(
+                      onPressed: () => showReadyColorsSheet(context, controller, attr.key),
+                      icon: const Icon(Icons.palette_outlined, size: 16),
+                      label: const Text('ألوان جاهزة'),
+                      style: _compactBtn,
+                    ),
+                    OutlinedButton.icon(
+                      onPressed: () => createNewColor(context, controller, attr.key),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: const Text('إنشاء لون جديد'),
+                      style: _compactBtn,
+                    ),
+                  ] else
+                    OutlinedButton.icon(
+                      onPressed: () => _showAddValuesSheet(context, attr),
+                      icon: const Icon(Icons.add, size: 16),
+                      label: Text('+ إضافة قيم ${attr.name}'),
+                      style: _compactBtn,
+                    ),
+                ]),
               ]),
             );
           }),
@@ -1299,6 +1397,7 @@ class _AttributesStepState extends State<_AttributesStep> {
             final showChips = chipValues.isNotEmpty || isCustomAttr;
             return _AttributeBlock(
               attr: attr,
+              controller: controller,
               requiredMark: false,
               onRemove: isCustomAttr ? () => controller.removeCustomAttribute(attr.key) : null,
               child: showChips
@@ -1334,11 +1433,23 @@ class _AttributesStepState extends State<_AttributesStep> {
             );
           }),
 
-          OutlinedButton.icon(
-            onPressed: () => _showAddCustomAttributeDialog(context),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('إضافة خاصية أخرى'),
-          ),
+          Wrap(spacing: 8, runSpacing: 8, children: [
+            OutlinedButton.icon(
+              onPressed: () => _showAddCustomAttributeDialog(context),
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('+ إضافة خاصية'),
+            ),
+            OutlinedButton.icon(
+              onPressed: () => showReadyAttributesSheet(context, controller),
+              icon: const Icon(Icons.auto_awesome_outlined, size: 18),
+              label: const Text('خصائص جاهزة'),
+            ),
+            OutlinedButton.icon(
+              onPressed: controller.selectedCategory == null ? null : () => showFavoritesSheet(context, controller),
+              icon: const Icon(Icons.bookmark_outline, size: 18),
+              label: const Text('مفضلاتي'),
+            ),
+          ]),
         ]),
       ),
 
@@ -1349,12 +1460,7 @@ class _AttributesStepState extends State<_AttributesStep> {
       if (controller.hasVariants && controller.variantDrafts.isNotEmpty)
         _SectionCard(
           title: 'سعر وكمية كل خيار',
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('حدّد السعر والكمية المناسبين لكل خيار — الخيار بكمية صفر يظهر للمشتري "نفد المخزون"',
-                style: TextStyle(fontSize: 11.5, color: colors.textSecondary)),
-            const SizedBox(height: 12),
-            _VariantCombinationsEditor(controller: controller),
-          ]),
+          child: _VariantPricingSection(controller: controller),
         ),
     ]);
   }
@@ -1365,30 +1471,58 @@ class _AttributeBlock extends StatelessWidget {
   final Widget child;
   final bool requiredMark;
   final VoidCallback? onRemove; // ✅ يظهر فقط للخصائص التي أضافها البائع
-  const _AttributeBlock({required this.attr, required this.child, this.requiredMark = true, this.onRemove});
+  final AddEditProductController? controller; // عند وجوده: أدوات الإدارة (إدارة/تفعيل/إخفاء)
+  const _AttributeBlock({required this.attr, required this.child, this.requiredMark = true, this.onRemove, this.controller});
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final c = controller;
+    final enabled = c == null || c.isAttributeEnabled(attr.key);
+    final hidden = c != null && !attr.isVariant && c.hiddenFromBuyerKeys.contains(attr.key);
     return Padding(
       padding: const EdgeInsets.only(bottom: 18),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
         Row(children: [
           Expanded(
-            child: requiredMark
-                ? _requiredLabel(context, attr.name)
-                : Text(attr.name, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: colors.textPrimary)),
+            child: Row(children: [
+              Flexible(
+                child: requiredMark
+                    ? _requiredLabel(context, attr.name)
+                    : Text(attr.name, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: colors.textPrimary)),
+              ),
+              if (hidden) ...[
+                const SizedBox(width: 6),
+                Icon(Icons.visibility_off_outlined, size: 16, color: colors.textHint),
+              ],
+            ]),
           ),
+          if (c != null)
+            IconButton(
+              onPressed: () => showAttributeManagerSheet(context, c, attr.key),
+              tooltip: 'إدارة الخاصية وقيمها',
+              visualDensity: VisualDensity.compact,
+              icon: Icon(Icons.tune_rounded, size: 22, color: colors.primary),
+            ),
           if (onRemove != null)
             IconButton(
               onPressed: onRemove,
               tooltip: 'حذف الخاصية',
               visualDensity: VisualDensity.compact,
-              icon: Icon(Icons.close_rounded, size: 18, color: colors.error),
+              icon: Icon(Icons.delete_outline, size: 22, color: colors.error),
+            ),
+          if (c != null)
+            Switch(
+              value: enabled,
+              activeThumbColor: colors.primary,
+              onChanged: (v) => c.setAttributeEnabled(attr.key, v),
             ),
         ]),
         const SizedBox(height: 10),
-        child,
+        Opacity(
+          opacity: enabled ? 1 : 0.4,
+          child: IgnorePointer(ignoring: !enabled, child: child),
+        ),
       ]),
     );
   }
@@ -1455,91 +1589,260 @@ class _ColorDot extends StatelessWidget {
 /// ✅ محرِّر التركيبات المتقدِّم — نُقل هنا كما هو من التصميم السابق (لا يزال
 // وظيفياً كاملاً)، لكنه الآن خلف تبويب "خيارات متقدمة" المطوى افتراضياً،
 // مطابقةً لتوجيه "لا نريد نظام مخزون معقّد الآن" مع إبقائه متاحاً لمن يريده.
-class _VariantCombinationsEditor extends StatefulWidget {
+/// ✅ قسم "سعر وكمية كل خيار": سؤالا التوحيد (السعر / الكمية) ثم قائمة التركيبات.
+class _VariantPricingSection extends StatelessWidget {
+  final AddEditProductController controller;
+  const _VariantPricingSection({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final phrase = controller.unifyAttrsPhrase;
+    final label = phrase.isEmpty ? 'الخيارات' : phrase;
+
+    Widget unifyCard({
+      required bool value,
+      required String question,
+      required ValueChanged<bool> onToggle,
+      required List<Widget> fields,
+    }) {
+      return Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: value ? colors.primary.withValues(alpha: 0.05) : null,
+          border: Border.all(color: value ? colors.primary.withValues(alpha: 0.4) : colors.border),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: () => onToggle(!value),
+            child: Row(children: [
+              Checkbox(value: value, onChanged: (v) => onToggle(v ?? false), activeColor: colors.primary),
+              Expanded(child: Text(question, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700))),
+            ]),
+          ),
+          if (value) ...fields,
+        ]),
+      );
+    }
+
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Text('حدّد السعر والكمية لكل خيار — الخيار بكمية صفر يظهر للمشتري "نفد المخزون"',
+          style: TextStyle(fontSize: 11.5, color: colors.textSecondary)),
+      const SizedBox(height: 12),
+      unifyCard(
+        value: controller.unifyPrice,
+        question: 'هل جميع $label لها نفس السعر؟',
+        onToggle: controller.setUnifyPrice,
+        fields: [
+          const SizedBox(height: 8),
+          _requiredLabel(context, 'السعر الأساسي'),
+          const SizedBox(height: 6),
+          TextField(
+            controller: controller.unifiedPriceCtrl,
+            keyboardType: TextInputType.number,
+            inputFormatters: kIntegerOnlyFormatters,
+            textDirection: TextDirection.ltr,
+            onChanged: (_) => controller.onUnifiedPriceChanged(),
+            decoration: const InputDecoration(isDense: true),
+          ),
+          NumberWordsHint(controller: controller.unifiedPriceCtrl),
+          const SizedBox(height: 12),
+          Text('السعر قبل الخصم (اختياري)', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: colors.textPrimary)),
+          const SizedBox(height: 6),
+          TextField(
+            controller: controller.unifiedOriginalCtrl,
+            keyboardType: TextInputType.number,
+            inputFormatters: kIntegerOnlyFormatters,
+            textDirection: TextDirection.ltr,
+            onChanged: (_) => controller.onUnifiedPriceChanged(),
+            decoration: const InputDecoration(isDense: true),
+          ),
+          NumberWordsHint(controller: controller.unifiedOriginalCtrl),
+        ],
+      ),
+      unifyCard(
+        value: controller.unifyStock,
+        question: 'هل جميع $label لها نفس الكمية؟',
+        onToggle: controller.setUnifyStock,
+        fields: [
+          const SizedBox(height: 8),
+          _requiredLabel(context, 'الكمية لكل خيار'),
+          const SizedBox(height: 6),
+          TextField(
+            controller: controller.unifiedStockCtrl,
+            keyboardType: TextInputType.number,
+            inputFormatters: kIntegerOnlyFormatters,
+            textDirection: TextDirection.ltr,
+            onChanged: (_) => controller.onUnifiedStockChanged(),
+            decoration: const InputDecoration(hintText: 'تُنسخ لكل خيار بصورة مستقلة', isDense: true),
+          ),
+          NumberWordsHint(controller: controller.unifiedStockCtrl),
+        ],
+      ),
+      _VariantCombinationsEditor(controller: controller),
+    ]);
+  }
+}
+
+class _VariantCombinationsEditor extends StatelessWidget {
   final AddEditProductController controller;
   const _VariantCombinationsEditor({required this.controller});
 
-  @override
-  State<_VariantCombinationsEditor> createState() => _VariantCombinationsEditorState();
-}
-
-class _VariantCombinationsEditorState extends State<_VariantCombinationsEditor> {
-  final _bulkPriceCtrl = TextEditingController();
-
-  @override
-  void dispose() {
-    _bulkPriceCtrl.dispose();
-    super.dispose();
-  }
-
   String _describe(VariantDraft draft) {
     final valuesByKey = <String, List<AttributeOptionValue>>{
-      for (final attr in widget.controller.variantAttributesAvailable)
-        attr.key: widget.controller.optionValuesFor(attr),
+      for (final attr in controller.variantAttributesAvailable) attr.key: controller.optionValuesFor(attr),
     };
     return draft.describeWith(valuesByKey);
   }
 
   @override
   Widget build(BuildContext context) {
-    final colors = context.colors;
-    final drafts = widget.controller.variantDrafts;
-
+    final drafts = controller.variantDrafts;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        Expanded(
-          child: TextField(
-            controller: _bulkPriceCtrl,
-            keyboardType: const TextInputType.numberWithOptions(decimal: true),
-            textDirection: TextDirection.ltr,
-            decoration: const InputDecoration(labelText: 'تطبيق سعر على الكل', isDense: true),
-          ),
+      for (var i = 0; i < drafts.length; i++)
+        _VariantRow(
+          key: ValueKey(drafts[i].optionValues.entries.map((e) => '${e.key}=${e.value}').join('|')),
+          controller: controller,
+          index: i,
+          draft: drafts[i],
+          title: _describe(drafts[i]),
         ),
-        const SizedBox(width: 8),
-        ElevatedButton(
-          onPressed: () {
-            final v = double.tryParse(_bulkPriceCtrl.text.trim());
-            if (v != null) widget.controller.applyPriceToAllDrafts(v);
-          },
-          child: const Text('تطبيق'),
-        ),
-      ]),
-      const SizedBox(height: 12),
-      ...List.generate(drafts.length, (i) {
-        final d = drafts[i];
-        return Container(
-          key: ValueKey(d.optionValues.entries.map((e) => '${e.key}=${e.value}').join('|')),
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(border: Border.all(color: colors.border), borderRadius: BorderRadius.circular(10)),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Expanded(child: Text(_describe(d), style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
-              Switch(value: d.isActive, onChanged: (_) => widget.controller.toggleDraftActive(i), activeThumbColor: colors.primary),
-            ]),
-            Row(children: [
-              Expanded(child: TextFormField(
-                initialValue: d.price.toString(),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                textDirection: TextDirection.ltr,
-                decoration: const InputDecoration(labelText: 'السعر', isDense: true),
-                onChanged: (v) => widget.controller.updateDraftPrice(i, double.tryParse(v) ?? d.price),
-              )),
-              const SizedBox(width: 10),
-              Expanded(child: TextFormField(
-                initialValue: d.stock.toString(),
-                keyboardType: TextInputType.number,
-                textDirection: TextDirection.ltr,
-                decoration: const InputDecoration(labelText: 'المخزون', isDense: true),
-                onChanged: (v) => widget.controller.updateDraftStock(i, int.tryParse(v) ?? d.stock),
-              )),
-            ]),
-          ]),
-        );
-      }),
     ]);
   }
 }
+
+/// صف تركيبة واحدة بمتحكماته الخاصة، يتزامن مع التوحيد دون المساس بما يكتبه البائع.
+class _VariantRow extends StatefulWidget {
+  final AddEditProductController controller;
+  final int index;
+  final VariantDraft draft;
+  final String title;
+  const _VariantRow({super.key, required this.controller, required this.index, required this.draft, required this.title});
+
+  @override
+  State<_VariantRow> createState() => _VariantRowState();
+}
+
+class _VariantRowState extends State<_VariantRow> {
+  late final TextEditingController _price;
+  late final TextEditingController _original;
+  late final TextEditingController _stock;
+
+  static String _num(double v) => v <= 0 ? '' : (v == v.roundToDouble() ? v.round().toString() : v.toString());
+
+  @override
+  void initState() {
+    super.initState();
+    _price = TextEditingController(text: _num(widget.draft.price));
+    _original = TextEditingController(text: _num(widget.draft.originalPrice));
+    _stock = TextEditingController(text: widget.draft.stock <= 0 ? '' : widget.draft.stock.toString());
+    widget.controller.addListener(_sync);
+  }
+
+  @override
+  void didUpdateWidget(covariant _VariantRow old) {
+    super.didUpdateWidget(old);
+    if (!identical(old.draft, widget.draft)) _sync();
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_sync);
+    _price.dispose();
+    _original.dispose();
+    _stock.dispose();
+    super.dispose();
+  }
+
+  void _setIfDiffers(TextEditingController c, String desired, num parsedCurrent, num wanted) {
+    if (parsedCurrent != wanted) c.text = desired;
+  }
+
+  /// يحدّث الحقول عند تغيّر القيمة من الخارج (التوحيد)؛ لا يلمس ما يطابق المسوّدة.
+  void _sync() {
+    if (!mounted) return;
+    final d = widget.draft;
+    _setIfDiffers(_price, _num(d.price), double.tryParse(_price.text) ?? 0, d.price);
+    _setIfDiffers(_original, _num(d.originalPrice), double.tryParse(_original.text) ?? 0, d.originalPrice);
+    _setIfDiffers(_stock, d.stock <= 0 ? '' : d.stock.toString(), int.tryParse(_stock.text) ?? 0, d.stock);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    final c = widget.controller;
+    final d = widget.draft;
+    final priceLocked = c.unifyPrice;
+    final stockLocked = c.unifyStock;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        border: Border.all(color: colors.border),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Expanded(child: Text(widget.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13))),
+          Switch(value: d.isActive, onChanged: (_) => c.toggleDraftActive(widget.index), activeThumbColor: colors.primary),
+        ]),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              TextField(
+                controller: _price,
+                enabled: !priceLocked,
+                keyboardType: TextInputType.number,
+                inputFormatters: kIntegerOnlyFormatters,
+                textDirection: TextDirection.ltr,
+                decoration: const InputDecoration(labelText: 'السعر', isDense: true),
+                onChanged: (v) => c.updateDraftPrice(widget.index, double.tryParse(v) ?? 0),
+              ),
+              NumberWordsHint(controller: _price),
+            ]),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              TextField(
+                controller: _original,
+                enabled: !priceLocked,
+                keyboardType: TextInputType.number,
+                inputFormatters: kIntegerOnlyFormatters,
+                textDirection: TextDirection.ltr,
+                decoration: const InputDecoration(labelText: 'قبل الخصم', isDense: true),
+                onChanged: (v) => c.updateDraftOriginalPrice(widget.index, double.tryParse(v) ?? 0),
+              ),
+              NumberWordsHint(controller: _original),
+            ]),
+          ),
+        ]),
+        const SizedBox(height: 8),
+        TextField(
+          controller: _stock,
+          enabled: !stockLocked,
+          keyboardType: TextInputType.number,
+          inputFormatters: kIntegerOnlyFormatters,
+          textDirection: TextDirection.ltr,
+          decoration: const InputDecoration(labelText: 'الكمية', isDense: true),
+          onChanged: (v) => c.updateDraftStock(widget.index, int.tryParse(v) ?? 0),
+        ),
+        NumberWordsHint(controller: _stock),
+        if (priceLocked || stockLocked)
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Text('الحقول المقفلة تتبع القيمة الموحَّدة — ألغِ التوحيد لتعديلها يدوياً',
+                style: TextStyle(fontSize: 10.5, color: colors.textSecondary)),
+          ),
+      ]),
+    );
+  }
+}
+
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  خطوة مرئية 2 — الصور
@@ -1602,9 +1905,9 @@ class _GalleryStep extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    final hasColor = controller.hasVariants &&
-        controller.variantAttributesAvailable.any((a) => a.key == 'color' &&
-            (controller.selectedVariantValueIds['color']?.isNotEmpty ?? false));
+    final hasValueImages = controller.hasVariants &&
+        controller.variantAttributesAvailable
+            .any((a) => (controller.selectedVariantValueIds[a.key]?.isNotEmpty ?? false));
 
     final allImages = <String>[
       if (controller.heroUrl != null) controller.heroUrl!,
@@ -1777,36 +2080,53 @@ class _GalleryStep extends StatelessWidget {
         ]),
       ),
 
-      if (hasColor)
+      if (hasValueImages)
         _SectionCard(
-          title: 'صور حسب اللون (اختياري)',
+          title: 'صور الخيارات (اختياري)',
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
-            children: (controller.selectedVariantValueIds['color'] ?? <String>{}).map((valueId) {
-              final attr = controller.variantAttributesAvailable.firstWhere((a) => a.key == 'color');
-              final resolved = controller.resolveOptionValue(attr, valueId);
-              final label = resolved?.label ?? valueId;
-              final url = controller.colorImageUrls[valueId];
-              return Padding(
-                padding: const EdgeInsets.only(bottom: 10),
-                child: Row(children: [
-                  SizedBox(width: 70, child: Text(label, style: const TextStyle(fontSize: 12))),
-                  if (url != null)
-                    Container(width: 48, height: 48,
-                        decoration: BoxDecoration(borderRadius: BorderRadius.circular(8),
-                            image: DecorationImage(image: NetworkImage(ImageKitService.productUrl(url)), fit: BoxFit.cover)))
-                  else
-                    Container(width: 48, height: 48,
-                        decoration: BoxDecoration(color: colors.background, borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: colors.border))),
-                  const SizedBox(width: 10),
-                  TextButton(
-                    onPressed: () => onPickImage((url) => controller.setColorImage(valueId, url)),
-                    child: const Text('اختيار'),
-                  ),
-                ]),
-              );
-            }).toList(),
+            children: [
+              Text('أضف صورة لأي قيمة تريد (لون، مقاس، سعة...) — تظهر للمشتري عند اختيارها، وإن لم تضف تُعرض الصورة الرئيسية.',
+                  style: TextStyle(fontSize: 11.5, color: colors.textSecondary)),
+              const SizedBox(height: 12),
+              for (final attr in controller.variantAttributesAvailable)
+                if ((controller.selectedVariantValueIds[attr.key] ?? const <String>{}).isNotEmpty) ...[
+                  Text(attr.name, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+                  const SizedBox(height: 8),
+                  for (final valueId in controller.selectedVariantValueIds[attr.key]!)
+                    Builder(builder: (_) {
+                      final label = controller.resolveOptionValue(attr, valueId)?.label ?? valueId;
+                      final url = controller.valueImageFor(attr.key, valueId);
+                      return Padding(
+                        padding: const EdgeInsets.only(bottom: 10),
+                        child: Row(children: [
+                          SizedBox(width: 90, child: Text(label, style: const TextStyle(fontSize: 12), maxLines: 2, overflow: TextOverflow.ellipsis)),
+                          if (url != null)
+                            Container(width: 48, height: 48,
+                                decoration: BoxDecoration(borderRadius: BorderRadius.circular(8),
+                                    image: DecorationImage(image: NetworkImage(ImageKitService.productUrl(url)), fit: BoxFit.cover)))
+                          else
+                            Container(width: 48, height: 48,
+                                decoration: BoxDecoration(color: colors.background, borderRadius: BorderRadius.circular(8),
+                                    border: Border.all(color: colors.border))),
+                          const SizedBox(width: 10),
+                          TextButton(
+                            onPressed: () => onPickImage((u) => controller.setValueImage(attr.key, valueId, u)),
+                            child: Text(url == null ? 'اختيار' : 'تغيير'),
+                          ),
+                          if (url != null)
+                            IconButton(
+                              tooltip: 'إزالة الصورة',
+                              visualDensity: VisualDensity.compact,
+                              icon: Icon(Icons.delete_outline, size: 22, color: colors.error),
+                              onPressed: () => controller.clearValueImage(attr.key, valueId),
+                            ),
+                        ]),
+                      );
+                    }),
+                  const SizedBox(height: 6),
+                ],
+            ],
           ),
         ),
 
@@ -1897,7 +2217,7 @@ class _ReviewStep extends StatelessWidget {
               const SizedBox(height: 2),
               Text(categoryPath, style: TextStyle(fontSize: 11.5, color: colors.textSecondary)),
               const SizedBox(height: 4),
-              Text('${controller.priceCtrl.text} ${controller.selectedCurrency.symbol}',
+              Text('${controller.displayPriceText} ${controller.selectedCurrency.symbol}',
                   style: TextStyle(fontWeight: FontWeight.bold, color: colors.primary, fontSize: 14)),
             ])),
           ]),
@@ -1919,7 +2239,7 @@ class _ReviewStep extends StatelessWidget {
           _ReviewRow(label: 'العلامة التجارية', value: brandText, icon: Icons.local_offer_outlined),
           _ReviewRow(
             label: 'السعر',
-            value: '${controller.priceCtrl.text} ${controller.selectedCurrency.symbol}',
+            value: '${controller.displayPriceText} ${controller.selectedCurrency.symbol}',
             icon: Icons.attach_money_rounded,
           ),
           _ReviewRow(

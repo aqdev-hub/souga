@@ -69,6 +69,10 @@ class ReviewsService {
       await _recalculateProductRating(productId);
 
       return 'success';
+    } on FirebaseException catch (e) {
+      // بوابة التقييم: لم يُكمل المستخدم طلباً فيه هذا المنتج
+      if (e.code == 'permission-denied') return 'denied';
+      return 'error: $e';
     } catch (e) {
       return 'error: $e';
     }

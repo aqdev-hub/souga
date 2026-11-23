@@ -27,6 +27,7 @@ import '../../utils/search_text.dart';
 import '../../widgets/product_sort_menu.dart';
 import '../../widgets/product/product_gallery_view.dart' show ProductImageFrame;
 import '../seller/product_form_stepper_screen.dart';
+import '../../utils/currencies.dart';
 
 // ── أسماء التصنيفات بالعربية — تُستخدم فقط لبناء سياق إعلان الذكاء الاصطناعي ──
 const List<Map<String, String>> _kAdminProductCategories = [
@@ -338,82 +339,96 @@ class _ProductAdminCard extends StatelessWidget {
     );
   }
 
+  // ✅ تخطيط البطاقة: صف علوي (صورة + بيانات المنتج بعرض كامل) ثم صف سفلي
+  // لأزرار الإجراءات — بدل حشر 5 أزرار بجانب النص (كان يضغط الاسم والسعر
+  // حتى ينكسر النص حرفاً حرفاً).
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final hasImage = product.firstImage.isNotEmpty;
     return Card(
       margin: const EdgeInsets.only(bottom: 10),
-      child: ListTile(
-        leading: ClipRRect(
-          borderRadius: BorderRadius.circular(8),
-          child: product.firstImage.isNotEmpty
-              ? ProductImageFrame(
-                  url: ImageKitService.productAdminUrl(product.firstImage),
-                  width: 52, height: 52, blurBackdrop: false, memCacheWidth: 160,
-                  fallback: Container(
-                    width: 52, height: 52, color: colors.border,
-                    child: const Icon(Icons.image_outlined)))
-              : Container(
-                  width: 52, height: 52, color: colors.border,
-                  child: Icon(Icons.image_outlined,
-                      color: colors.textHint)),
-        ),
-        title: Text(product.name,
-            style: const TextStyle(fontWeight: FontWeight.bold),
-            maxLines: 1, overflow: TextOverflow.ellipsis),
-        subtitle: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Text('${product.price.toStringAsFixed(2)} ${product.currencySymbol} • ${product.sellerName}',
-              style: const TextStyle(fontSize: 12)),
-          Row(children: [
-            Icon(Icons.photo_library_outlined,
-                size: 12, color: colors.textHint),
-            const SizedBox(width: 2),
-            Text('${product.images.length} صورة',
-                style: TextStyle(fontSize: 11, color: colors.textHint)),
-            const SizedBox(width: 8),
-            Icon(Icons.visibility_outlined,
-                size: 12, color: colors.textHint),
-            const SizedBox(width: 2),
-            Text('${product.displayWeight}/10',
-                style: TextStyle(fontSize: 11, color: colors.textHint)),
-            if (product.hasVariants) ...[
-              const SizedBox(width: 8),
-              Icon(Icons.style_outlined, size: 12, color: colors.primary),
-              const SizedBox(width: 2),
-              Text('متغيرات', style: TextStyle(fontSize: 11, color: colors.primary)),
-            ],
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 6),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: hasImage
+                  ? ProductImageFrame(
+                      url: ImageKitService.productAdminUrl(product.firstImage),
+                      width: 68, height: 68, blurBackdrop: false, memCacheWidth: 200,
+                      fallback: Container(
+                          width: 68, height: 68, color: colors.border,
+                          child: const Icon(Icons.image_outlined)))
+                  : Container(
+                      width: 68, height: 68, color: colors.border,
+                      child: Icon(Icons.image_outlined, color: colors.textHint)),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(product.name,
+                    style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14.5, height: 1.3),
+                    maxLines: 2, overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 4),
+                Text('${formatMoney(product.price)} ${product.currencySymbol}',
+                    style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14, color: colors.primary)),
+                const SizedBox(height: 2),
+                Row(children: [
+                  Icon(Icons.storefront_outlined, size: 13, color: colors.textHint),
+                  const SizedBox(width: 4),
+                  Expanded(
+                    child: Text(product.sellerName,
+                        style: TextStyle(fontSize: 12, color: colors.textSecondary),
+                        maxLines: 1, overflow: TextOverflow.ellipsis),
+                  ),
+                ]),
+                const SizedBox(height: 6),
+                Wrap(spacing: 12, runSpacing: 4, children: [
+                  _meta(Icons.photo_library_outlined, '${product.images.length} صورة', colors.textHint),
+                  _meta(Icons.visibility_outlined, '${product.displayWeight}/10', colors.textHint),
+                  if (product.hasVariants) _meta(Icons.style_outlined, 'متغيرات', colors.primary),
+                ]),
+              ]),
+            ),
+          ]),
+          const SizedBox(height: 8),
+          Divider(height: 1, color: colors.divider),
+          Row(mainAxisAlignment: MainAxisAlignment.spaceAround, children: [
+            _AdminActionButton(
+              icon: Icons.auto_awesome, color: const Color(0xFFE1306C), label: 'إعلان',
+              tooltip: 'إعلان تسويقي بالذكاء الاصطناعي',
+              onTap: () => _openMarketingAd(context),
+            ),
+            _AdminActionButton(
+              icon: Icons.notifications_active_outlined, color: colors.primary, label: 'إشعار',
+              tooltip: 'إرسال إشعار للمستخدمين',
+              onTap: () => _openNotificationCampaign(context),
+            ),
+            _AdminActionButton(
+              icon: Icons.campaign_outlined, color: const Color(0xFF7B2D8B), label: 'مشاركة',
+              tooltip: 'مشاركة', onTap: () => _openShareOptions(context),
+            ),
+            _AdminActionButton(
+              icon: Icons.edit_outlined, color: colors.info, label: 'تعديل',
+              tooltip: 'تعديل المنتج', onTap: () => _editProduct(context),
+            ),
+            _AdminActionButton(
+              icon: Icons.delete_outline, color: colors.error, label: 'حذف',
+              tooltip: 'حذف المنتج', onTap: () => _delete(context),
+            ),
           ]),
         ]),
-        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
-          IconButton(
-            icon: const Icon(Icons.auto_awesome, color: Color(0xFFE1306C), size: 20),
-            tooltip: 'إعلان تسويقي بالذكاء الاصطناعي',
-            onPressed: () => _openMarketingAd(context),
-          ),
-          IconButton(
-            icon: Icon(Icons.notifications_active_outlined, color: colors.primary, size: 20),
-            tooltip: 'إرسال إشعار للمستخدمين',
-            onPressed: () => _openNotificationCampaign(context),
-          ),
-          IconButton(
-            icon: const Icon(Icons.campaign_outlined, color: Color(0xFF7B2D8B), size: 20),
-            tooltip: 'مشاركة',
-            onPressed: () => _openShareOptions(context),
-          ),
-          IconButton(
-            icon: Icon(Icons.edit_outlined, color: colors.primary, size: 20),
-            tooltip: 'تعديل المنتج',
-            onPressed: () => _editProduct(context),
-          ),
-          IconButton(
-            icon: Icon(Icons.delete_outline, color: colors.error, size: 20),
-            onPressed: () => _delete(context),
-          ),
-        ]),
-        isThreeLine: true,
       ),
     );
   }
+
+  Widget _meta(IconData icon, String text, Color color) => Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 13, color: color),
+        const SizedBox(width: 3),
+        Text(text, style: TextStyle(fontSize: 11.5, color: color)),
+      ]);
 
   Future<void> _openShareOptions(BuildContext ctx) async {
     final imgs = product.images
@@ -433,6 +448,41 @@ class _ProductAdminCard extends StatelessWidget {
         adText:             '',
         productDescription: product.description,
         videoUrl:           sougaFirstVideoUrl(product.gallery),
+      ),
+    );
+  }
+}
+
+// زر إجراء بأيقونة ونص صغير تحتها — مساحة لمس مريحة (≥ 48×44)
+class _AdminActionButton extends StatelessWidget {
+  final IconData icon;
+  final Color color;
+  final String label;
+  final String tooltip;
+  final VoidCallback onTap;
+  const _AdminActionButton({
+    required this.icon,
+    required this.color,
+    required this.label,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Icon(icon, color: color, size: 22),
+            const SizedBox(height: 2),
+            Text(label, style: TextStyle(fontSize: 10.5, color: color, fontWeight: FontWeight.w600)),
+          ]),
+        ),
       ),
     );
   }

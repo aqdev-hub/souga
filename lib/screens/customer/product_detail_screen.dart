@@ -26,6 +26,7 @@ import '../../widgets/product/product_gallery_thumbnail_bar.dart';
 import '../../services/chat_service.dart';
 import '../shared/chat_screen.dart';
 import '../../services/share_options_sheet.dart';
+import '../../utils/currencies.dart';
 
 // ── ثوابت الروابط ─────────────────────────────────────────────────────────────
 
@@ -254,8 +255,36 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
               Expanded(child: Text(widget.product.name,
                   style: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
               const SizedBox(width: 12),
-              Text('${_effectivePrice.toStringAsFixed(2)} ${widget.product.currencySymbol}',
-                  style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: colors.primary)),
+              Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+                Text('${formatMoney(_effectivePrice)} ${widget.product.currencySymbol}',
+                    style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold, color: colors.primary)),
+                // ✅ السعر قبل الخصم + نسبة الخصم (للمنتجات بلا متغيرات فقط حتى لا
+                // نقارن سعر خيار معيّن بسعر المنتج الأساسي)
+                if (!widget.product.hasVariants && widget.product.hasDiscount) ...[
+                  const SizedBox(height: 2),
+                  Row(mainAxisSize: MainAxisSize.min, children: [
+                    Text('${formatMoney(widget.product.originalPrice!)} ${widget.product.currencySymbol}',
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: colors.textHint,
+                          decoration: TextDecoration.lineThrough,
+                        )),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: colors.error,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        '-${(((widget.product.originalPrice! - widget.product.price) / widget.product.originalPrice!) * 100).round()}%',
+                        style: const TextStyle(
+                            color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ]),
+                ],
+              ]),
             ]),
             // ✅ الوصف المختصر + حالة المنتج + القسم الفرعي المخصّص (تظهر فقط إن وُجدت)
             _ProductQuickInfo(product: widget.product),
@@ -369,6 +398,9 @@ class _ProductDetailScreenState extends State<ProductDetailScreen> {
           _ReviewsSection(product: widget.product, uid: uid, isGuest: isGuest, user: user),
 
           Divider(thickness: 8, color: colors.divider),
+
+          // ─── منتجات مشابهة (نفس الفئة) ─────────────────────
+          _SimilarProductsSection(product: widget.product),
 
           // ─── منتجات من نفس البائع ─────────────────────────
           Padding(padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
@@ -714,7 +746,11 @@ class _ReviewsSectionState extends State<_ReviewsSection> {
                 if (!ctx.mounted) return;
                 Navigator.pop(ctx);
                 ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-                  content: Text(result == 'success' ? '✅ تم حفظ تقييمك' : '❌ حدث خطأ'),
+                  content: Text(result == 'success'
+                      ? '✅ تم حفظ تقييمك'
+                      : result == 'denied'
+                          ? 'يمكنك تقييم المنتج بعد استلامه واكتمال طلبك.'
+                          : '❌ حدث خطأ'),
                   backgroundColor: result == 'success' ? colors.success : colors.error,
                 ));
               },
@@ -1658,6 +1694,45 @@ String attributeDisplayLabel(String key) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── هيدر المعرض (SliverAppBar + زر مشاركة + زر مفضلة + مؤشر صفحات) ────────
+// ✅ تحسينات: الصورة تبدأ تحت شريط حالة الهاتف (شريط بلون الهوية خلفه) فلا
+// تتداخل أيقونات الحالة معها، وأزرار (رجوع/مشاركة/مفضلة) داخل دوائر داكنة شبه
+// شفافة لتبقى ظاهرة فوق الصور الفاتحة، ومؤشر الصفحات داخل كبسولة داكنة
+// (وعدّاد «3 / 11» عند كثرة الصور بدل صف نقاط مزدحم).
+class _GlassIconButton extends StatelessWidget {
+  final IconData icon;
+  final Color? color;
+  final String tooltip;
+  final VoidCallback onPressed;
+  const _GlassIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+    this.color,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 8),
+      child: Material(
+        color: Colors.black.withValues(alpha: 0.38),
+        shape: const CircleBorder(),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onPressed,
+          child: Tooltip(
+            message: tooltip,
+            child: SizedBox(
+              width: 40, height: 40,
+              child: Icon(icon, size: 22, color: color ?? Colors.white),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ProductGalleryHeader extends StatelessWidget {
   final ProductModel product;
   final ProductGalleryController controller;
@@ -1680,11 +1755,17 @@ class _ProductGalleryHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final topInset = MediaQuery.of(context).padding.top;
     return SliverAppBar(
       expandedHeight: 380, pinned: true, backgroundColor: colors.primary,
+      leading: _GlassIconButton(
+        icon: Icons.arrow_back,
+        tooltip: 'رجوع',
+        onPressed: () => Navigator.maybePop(context),
+      ),
       actions: [
-        IconButton(
-          icon: const Icon(Icons.share_outlined, color: Colors.white),
+        _GlassIconButton(
+          icon: Icons.share_outlined,
           tooltip: 'مشاركة المنتج',
           onPressed: onSharePressed,
         ),
@@ -1692,9 +1773,10 @@ class _ProductGalleryHeader extends StatelessWidget {
           stream: favs.isFavoriteStream(uid, product.id),
           builder: (_, snap) {
             final isFav = snap.data ?? false;
-            return IconButton(
-              icon: Icon(isFav ? Icons.favorite : Icons.favorite_outline,
-                  color: isFav ? Colors.red : Colors.white),
+            return _GlassIconButton(
+              icon: isFav ? Icons.favorite : Icons.favorite_outline,
+              color: isFav ? Colors.redAccent : Colors.white,
+              tooltip: isFav ? 'إزالة من المفضلة' : 'إضافة إلى المفضلة',
               onPressed: () {
                 if (isGuest) { onRequireLogin(); return; }
                 favs.toggleFavorite(
@@ -1705,71 +1787,104 @@ class _ProductGalleryHeader extends StatelessWidget {
             );
           },
         ),
+        const SizedBox(width: 4),
       ],
       flexibleSpace: FlexibleSpaceBar(
-        // ✅ محرك المعرض الجديد بالكامل — يحل محل PageView اليدوي و
-        // _imgIndex. يعمل تلقائياً مع صورة واحدة (منتج قديم)، أو
-        // فيديو+صور+ألوان+مقاسات (منتج جديد) دون أي فرع خاص هنا.
+        // ✅ محرك المعرض: يعمل مع صورة واحدة أو فيديو+صور+ألوان+مقاسات.
         background: GestureDetector(
-          // ✅ أُبقيت خاصية "فتح رابط المنتج بالمتصفح" بالضغط المطوّل
-          // كما كانت (مفيدة لمشاركة/نسخ الرابط). أزلت النقر العادي القديم
-          // لفتح المتصفح لأنه كان يتعارض مع نقرة تشغيل/إيقاف الفيديو.
+          // الضغط المطوّل يفتح رابط المنتج بالمتصفح (للمشاركة/النسخ).
           onLongPress: () {
             final url = 'https://souga-5fdb3.web.app/product/${product.id}';
             launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
           },
-          child: Stack(children: [
-            // ✅ المعرض يملأ كامل مساحة الهيدر (بما فيها ارتفاع شريط الحالة)
-            // فلا يظهر أي شريط أحمر تحته.
-            Positioned.fill(
-              child: ProductGalleryView(controller: controller, height: double.infinity),
-            ),
-            // تدرّج خفيف أعلى الصورة ليبقى زرّا المشاركة والمفضلة مقروءين.
-            Positioned(
-              top: 0, left: 0, right: 0, height: 90,
-              child: IgnorePointer(
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topCenter, end: Alignment.bottomCenter,
-                      colors: [Colors.black.withValues(alpha: 0.35), Colors.transparent],
+          child: Padding(
+            // مسافة علوية بقدر شريط الحالة: الصورة لا تدخل تحته.
+            padding: EdgeInsets.only(top: topInset),
+            child: Stack(children: [
+              Positioned.fill(
+                child: ProductGalleryView(controller: controller, height: double.infinity),
+              ),
+              // تدرّج علوي خفيف خلف الأزرار
+              Positioned(
+                top: 0, left: 0, right: 0, height: 80,
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter, end: Alignment.bottomCenter,
+                        colors: [Colors.black.withValues(alpha: 0.28), Colors.transparent],
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-            AnimatedBuilder(
-              animation: controller,
-              builder: (context, _) {
-                final total = controller.gallery.length;
-                if (total <= 1) return const SizedBox.shrink();
-                return Positioned(bottom: 14, left: 0, right: 0,
-                  child: IgnorePointer(
-                    child: Row(mainAxisAlignment: MainAxisAlignment.center,
-                      children: List.generate(total, (i) {
-                        final active = i == controller.currentPage;
-                        return AnimatedContainer(
-                          duration: const Duration(milliseconds: 200),
-                          width: active ? 22 : 8, height: 8,
-                          margin: const EdgeInsets.symmetric(horizontal: 3),
-                          decoration: BoxDecoration(
-                            // ✅ المؤشر النشط بالقرمزي (هوية سوجا) مع حدّ أبيض
-                            // ليظهر على أي صورة، وغير النشط أبيض شبه شفاف بظل.
-                            color: active ? colors.primary : Colors.white.withValues(alpha: 0.85),
-                            borderRadius: BorderRadius.circular(4),
-                            border: active ? Border.all(color: Colors.white, width: 1.2) : null,
-                            boxShadow: const [BoxShadow(color: Colors.black38, blurRadius: 3)],
-                          ),
-                        );
-                      }),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ]),
+              _GalleryIndicator(controller: controller),
+            ]),
+          ),
         ),
       ),
+    );
+  }
+}
+
+// مؤشر صفحات المعرض: نقاط داخل كبسولة داكنة، أو عدّاد عند كثرة الصور
+class _GalleryIndicator extends StatelessWidget {
+  final ProductGalleryController controller;
+  const _GalleryIndicator({required this.controller});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return AnimatedBuilder(
+      animation: controller,
+      builder: (context, _) {
+        final total = controller.gallery.length;
+        if (total <= 1) return const SizedBox.shrink();
+        final current = controller.currentPage.clamp(0, total - 1);
+        final Widget content;
+        if (total > 7) {
+          content = Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.photo_library_outlined, size: 14, color: Colors.white),
+            const SizedBox(width: 6),
+            Text('${current + 1} / $total',
+                style: const TextStyle(color: Colors.white, fontSize: 12.5, fontWeight: FontWeight.w700)),
+          ]);
+        } else {
+          content = Row(
+            mainAxisSize: MainAxisSize.min,
+            children: List.generate(total, (i) {
+              final active = i == current;
+              return AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                width: active ? 20 : 7,
+                height: 7,
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                decoration: BoxDecoration(
+                  color: active ? colors.accent : Colors.white.withValues(alpha: 0.85),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              );
+            }),
+          );
+        }
+        return Positioned(
+          bottom: 12,
+          left: 0,
+          right: 0,
+          child: IgnorePointer(
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.42),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: content,
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -1788,10 +1903,14 @@ class _StockBadge extends StatelessWidget {
     // دعوة لاختيار الخيارات بدل "غير متوفر" المُضلِّلة.
     final label = awaitingSelection
         ? 'اختر الخيارات لعرض التوفر'
-        : (hasStock ? 'متوفر ($stock)' : 'غير متوفر');
+        : (hasStock
+            ? (stock <= 5 ? '🔥 متبقي $stock فقط' : 'متوفر ($stock)')
+            : 'غير متوفر');
     final color = awaitingSelection
         ? colors.textSecondary
-        : (hasStock ? colors.success : colors.error);
+        : (hasStock
+            ? (stock <= 5 ? const Color(0xFFEF6C00) : colors.success)
+            : colors.error);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       decoration: BoxDecoration(color: color.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
@@ -2062,6 +2181,79 @@ class _ProductQuickInfo extends StatelessWidget {
           if (sub.isNotEmpty) chip(Icons.label_outline, sub, colors.primary),
         ]),
       ]),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  منتجات مشابهة: من نفس الفئة الجذرية (غير هذا المنتج وغير منتجات البائع نفسه
+//  لأنها تظهر في قسمها). استعلام واحد عند الفتح (get وليس stream) بحدّ 12.
+//  تختفي بالكامل إن لم توجد نتائج أو فشل الاستعلام.
+// ─────────────────────────────────────────────────────────────────────────────
+class _SimilarProductsSection extends StatefulWidget {
+  final ProductModel product;
+  const _SimilarProductsSection({required this.product});
+
+  @override
+  State<_SimilarProductsSection> createState() => _SimilarProductsSectionState();
+}
+
+class _SimilarProductsSectionState extends State<_SimilarProductsSection> {
+  late final Future<List<ProductModel>> _future = _load();
+
+  Future<List<ProductModel>> _load() async {
+    final p = widget.product;
+    if (p.category.isEmpty) return const [];
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('products')
+          .where('category', isEqualTo: p.category)
+          .limit(12)
+          .get();
+      return snap.docs
+          .map((d) => ProductModel.fromMap(d.data(), d.id))
+          .where((x) => x.id != p.id && x.sellerId != p.sellerId)
+          .take(8)
+          .toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return FutureBuilder<List<ProductModel>>(
+      future: _future,
+      builder: (ctx, snap) {
+        final items = snap.data ?? const <ProductModel>[];
+        if (items.isEmpty) return const SizedBox.shrink();
+        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Divider(thickness: 8, color: colors.divider),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+            child: Text('منتجات مشابهة',
+                style: TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.bold, color: colors.textPrimary)),
+          ),
+          SizedBox(
+            height: 220,
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              itemCount: items.length,
+              itemBuilder: (_, i) => ProductCard(
+                product: items[i],
+                onTap: () => Navigator.pushReplacement(
+                  ctx,
+                  MaterialPageRoute(builder: (_) => ProductDetailScreen(product: items[i])),
+                ),
+              ),
+            ),
+          ),
+          Divider(thickness: 8, color: colors.divider),
+        ]);
+      },
     );
   }
 }

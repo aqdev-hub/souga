@@ -9,6 +9,7 @@ import '../providers/cart_provider.dart';
 import '../services/push_notification_service.dart';
 import '../utils/app_colors.dart';
 import 'admin/admin_main_screen.dart';
+import 'auth/email_otp_screen.dart';
 import 'auth/login_screen.dart';
 import 'customer/customer_main_screen.dart';
 import 'seller/seller_main_screen.dart';
@@ -51,6 +52,9 @@ class Wrapper extends StatelessWidget {
             // المتكرر (لا يفعل شيئاً إن كانت السلة مرتبطة بالفعل بنفس uid).
             unawaited(context.read<CartProvider>().bindUser(user.uid));
             unawaited(PushNotificationService.init(uid: user.uid));
+
+            // ✅ حساب جديد لم يؤكد بريده → شاشة رمز التأكيد (الحسابات القديمة لا تتأثر)
+            if (user.needsEmailVerification) return const EmailOtpScreen();
 
             if (user.isAdmin) return const AdminMainScreen();
             if (user.isSeller) return const SellerMainScreen();

@@ -7,6 +7,7 @@ import '../../providers/cart_provider.dart';
 import '../../utils/app_colors.dart';
 import '../../widgets/product/product_gallery_view.dart' show ProductImageFrame;
 import 'checkout_screen.dart';
+import '../../utils/currencies.dart';
 
 class CartScreen extends StatelessWidget {
   const CartScreen({super.key});
@@ -99,7 +100,7 @@ class CartScreen extends StatelessWidget {
                           ),
                         ],
                         const SizedBox(height: 4),
-                        Text('${item.price.toStringAsFixed(2)} ${item.currencySymbol}',
+                        Text('${formatMoney(item.price)} ${item.currencySymbol}',
                             style: TextStyle(color: colors.primary, fontWeight: FontWeight.bold)),
                         const SizedBox(height: 8),
                         Row(children: [
@@ -118,7 +119,7 @@ class CartScreen extends StatelessWidget {
                             ]),
                           ),
                           const Spacer(),
-                          Text('${item.total.toStringAsFixed(2)} ${item.currencySymbol}',
+                          Text('${formatMoney(item.total)} ${item.currencySymbol}',
                               style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
                         ]),
                       ])),
@@ -156,7 +157,7 @@ class CartScreen extends StatelessWidget {
                     padding: const EdgeInsets.only(bottom: 6),
                     child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                       Text('الإجمالي (${e.key}):', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                      Text('${e.value.toStringAsFixed(2)} ${e.key}',
+                      Text('${formatMoney(e.value)} ${e.key}',
                           style: TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: colors.primary)),
                     ]),
                   )),

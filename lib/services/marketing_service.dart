@@ -577,12 +577,15 @@ class _MarketingAdScreenState extends State<MarketingAdScreen>
                   borderRadius: BorderRadius.circular(12),
                   child: AspectRatio(
                     aspectRatio: 1.2,
-                    child: Image.network(widget.productImageUrl,
-                        fit: BoxFit.cover,
+                    // contain: تظهر الصورة كاملة بلا اقتطاع، على خلفية داكنة ناعمة
+                    child: ColoredBox(
+                      color: Colors.black26,
+                      child: Image.network(widget.productImageUrl,
+                        fit: BoxFit.contain,
                         errorBuilder: (_, __, ___) => Container(
                             color: Colors.white12,
                             child: const Center(child: Icon(Icons.image_outlined,
-                                color: Colors.white30, size: 48)))),
+                                color: Colors.white30, size: 48))))),
                   ),
                 ),
               const SizedBox(height: 10),

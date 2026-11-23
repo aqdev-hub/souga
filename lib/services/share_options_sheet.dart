@@ -238,6 +238,32 @@ Future<File?> _dlVideo(String url) async {
   }
 }
 
+/// يرسم الصورة كاملة داخل [rect] بلا قصّ ولا تمديد (BoxFit.contain)،
+/// وخلفها نسخة مموّهة من الصورة نفسها تملأ الإطار فلا تظهر أشرطة فارغة.
+void _drawContain(Canvas c, ui.Image img, Rect rect, {Paint? paint, bool blurBg = true}) {
+  final iw = img.width.toDouble(), ih = img.height.toDouble();
+  if (iw <= 0 || ih <= 0) return;
+  final src = Rect.fromLTWH(0, 0, iw, ih);
+  final scale = (rect.width / iw) < (rect.height / ih) ? rect.width / iw : rect.height / ih;
+  final dw = iw * scale, dh = ih * scale;
+  final dst = Rect.fromLTWH(rect.left + (rect.width - dw) / 2, rect.top + (rect.height - dh) / 2, dw, dh);
+
+  // لو النسبة تكاد تطابق الإطار فلا حاجة لخلفية
+  final needBg = blurBg && ((dw - rect.width).abs() > 2 || (dh - rect.height).abs() > 2);
+  if (needBg) {
+    c.save();
+    c.clipRect(rect);
+    final cover = (rect.width / iw) > (rect.height / ih) ? rect.width / iw : rect.height / ih;
+    final cw = iw * cover, ch = ih * cover;
+    final cdst = Rect.fromLTWH(rect.left + (rect.width - cw) / 2, rect.top + (rect.height - ch) / 2, cw, ch);
+    c.drawImageRect(img, src, cdst,
+        Paint()..imageFilter = ui.ImageFilter.blur(sigmaX: 28, sigmaY: 28, tileMode: TileMode.clamp));
+    c.drawRect(rect, Paint()..color = Colors.black.withValues(alpha: 0.28));
+    c.restore();
+  }
+  c.drawImageRect(img, src, dst, paint ?? Paint()..filterQuality = FilterQuality.high);
+}
+
 Future<ui.Image?> _loadUiImage(File f, {int? w, int? h}) async {
   try {
     final bytes = await f.readAsBytes();
@@ -573,7 +599,7 @@ abstract class SougaMediaBuilder {
         prodFile = await _dlImg(d.imageUrls.first);
       }
       final prodImg = prodFile != null
-          ? await _loadUiImage(prodFile, w: 1080, h: 1080)
+          ? await _loadUiImage(prodFile, w: 1600)
           : null;
 
       final rec = ui.PictureRecorder();
@@ -602,12 +628,7 @@ abstract class SougaMediaBuilder {
         c.save();
         c.clipRRect(
             RRect.fromRectAndRadius(imgRect, const Radius.circular(36)));
-        c.drawImageRect(
-          prodImg,
-          Rect.fromLTWH(
-              0, 0, prodImg.width.toDouble(), prodImg.height.toDouble()),
-          imgRect, Paint(),
-        );
+        _drawContain(c, prodImg, imgRect);
         c.restore();
         // حدة بيضاء حول الصورة
         c.drawRRect(
@@ -676,7 +697,7 @@ abstract class SougaMediaBuilder {
       for (final url in d.imageUrls.take(6)) {
         final f = await _dlImg(url);
         if (f != null) {
-          final img = await _loadUiImage(f, w: 1080, h: 1080);
+          final img = await _loadUiImage(f, w: 1600);
           if (img != null) imgs.add(img);
         }
       }
@@ -698,10 +719,7 @@ abstract class SougaMediaBuilder {
           // overlay gradient فوق الصورة
           c.save();
           c.clipRect(imgRect);
-          c.drawImageRect(imgs[0],
-              Rect.fromLTWH(0, 0, imgs[0].width.toDouble(),
-                  imgs[0].height.toDouble()),
-              imgRect, Paint());
+          _drawContain(c, imgs[0], imgRect);
           // gradient أعلى وأسفل
           _drawGrad(c, 0, 260, W, 300,
               [_kDark, Colors.transparent], [0.0, 1.0]);
@@ -766,12 +784,7 @@ abstract class SougaMediaBuilder {
           c.save();
           c.clipRRect(RRect.fromRectAndRadius(rect,
               const Radius.circular(20)));
-          c.drawImageRect(
-            gridImgs[i],
-            Rect.fromLTWH(0, 0, gridImgs[i].width.toDouble(),
-                gridImgs[i].height.toDouble()),
-            rect, Paint(),
-          );
+          _drawContain(c, gridImgs[i], rect);
           c.restore();
         }
 
@@ -821,13 +834,8 @@ abstract class SougaMediaBuilder {
           c.save();
           final paint = Paint()
             ..color = Colors.white.withValues(alpha: 0.07);
-          c.drawImageRect(
-            imgs[0],
-            Rect.fromLTWH(0, 0, imgs[0].width.toDouble(),
-                imgs[0].height.toDouble()),
-            const Rect.fromLTWH(0, 500, W, W),
-            paint,
-          );
+          _drawContain(c, imgs[0], const Rect.fromLTWH(0, 500, W, W),
+              paint: paint, blurBg: false);
           c.restore();
         }
 

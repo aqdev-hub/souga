@@ -7,6 +7,7 @@ import '../../providers/auth_provider.dart';
 import '../../services/notifications_service.dart';
 import '../../utils/app_colors.dart';
 import 'seller_orders_screen.dart';
+import 'seller_earnings_screen.dart';
 import 'seller_products_screen.dart';
 import '../shared/notifications_screen.dart';
 
@@ -78,11 +79,23 @@ class SellerDashboardScreen extends StatelessWidget {
             Expanded(child: _SellerStatCard(
               title: 'مكتملة', icon: Icons.check_circle_outline, color: colors.success,
               future: fs.collection('orders').where('sellerId', isEqualTo: user.uid)
-                  .where('status', isEqualTo: 'delivered').count().get().then((s) => s.count ?? 0),
+                  .where('status', whereIn: ['delivered', 'completed']).count().get().then((s) => s.count ?? 0),
               onTap: () => Navigator.push(context,
                   MaterialPageRoute(builder: (_) => const SellerOrdersScreen(filterStatus: 'delivered'))),
             )),
           ]),
+          const SizedBox(height: 12),
+          // ✅ مستحقاتي: المتاح والمحجوز والعمولة وسجل الحركات
+          Card(
+            child: ListTile(
+              leading: Icon(Icons.account_balance_wallet_outlined, color: colors.success),
+              title: const Text('مستحقاتي', style: TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: const Text('المتاح، المحجوز، العمولة، وسجل الحركات'),
+              trailing: Icon(Icons.chevron_left, color: colors.textHint),
+              onTap: () => Navigator.push(context,
+                  MaterialPageRoute(builder: (_) => const SellerEarningsScreen())),
+            ),
+          ),
           const SizedBox(height: 24),
           Text('آخر الطلبات',
               style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: colors.textPrimary)),
@@ -136,8 +149,11 @@ class SellerDashboardScreen extends StatelessWidget {
       case 'pending': return colors.warning;
       case 'confirmed': return colors.info;
       case 'shipped': return colors.primary;
-      case 'delivered': return colors.success;
-      case 'cancelled': return colors.error;
+      case 'delivered':
+      case 'completed': return colors.success;
+      case 'cancelled':
+      case 'delivery_failed': return colors.error;
+      case 'disputed': return colors.warning;
       default: return colors.textSecondary;
     }
   }
@@ -147,7 +163,9 @@ class SellerDashboardScreen extends StatelessWidget {
       case 'pending': return Icons.hourglass_empty;
       case 'confirmed': return Icons.check;
       case 'shipped': return Icons.local_shipping_outlined;
-      case 'delivered': return Icons.check_circle_outline;
+      case 'delivered':
+      case 'completed': return Icons.check_circle_outline;
+      case 'disputed': return Icons.gavel_outlined;
       default: return Icons.cancel_outlined;
     }
   }
@@ -155,10 +173,13 @@ class SellerDashboardScreen extends StatelessWidget {
   String _statusArabic(String s) {
     switch (s) {
       case 'pending': return 'انتظار';
-      case 'confirmed': return 'مؤكد';
-      case 'shipped': return 'شحن';
-      case 'delivered': return 'مكتمل';
+      case 'confirmed': return 'قيد التجهيز';
+      case 'shipped': return 'في الطريق';
+      case 'delivered': return 'مسلّم';
+      case 'completed': return 'مكتمل';
       case 'cancelled': return 'ملغي';
+      case 'delivery_failed': return 'فشل التسليم';
+      case 'disputed': return 'مشكلة';
       default: return s;
     }
   }

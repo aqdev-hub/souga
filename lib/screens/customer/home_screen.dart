@@ -16,16 +16,32 @@
 // نافذة زمنية (dealEndsAt) — لا يظهر القسم إطلاقاً إن لم توجد عروض حقيقية،
 // حتى لا نعرض عدّاداً زائفاً بلا محتوى.
 
+// lib/screens/customer/home_screen.dart  (v4 — أسرع وأجمل)
+//
+// ✅ الأداء:
+//   • طلب واحد مُخزَّن (HomeFeedService) بدل 5 مستمعين حيّين كانت تُعاد
+//     الاشتراكات فيها مع كل إعادة بناء (Stream جديد في build) — توفير كبير في القراءات
+//   • تحميل المزيد تلقائياً عند الاقتراب من نهاية القائمة + RepaintBoundary للصفوف
+//   • هياكل تحميل (Skeleton) بدل دوّامات التحميل
+// ✅ التجربة:
+//   • سحب للتحديث، زر السلة يعمل، النقر على تصنيف في "تصفّح حسب التصنيف" يفلتر الرئيسية
+//   • رسالة خطأ مع إعادة المحاولة عند فشل الشبكة
+// ✅ الشكل: بانر أنظف بنقاط، عناوين أقسام موحّدة، حركة دخول خفيفة
+// نفس الهوية (أحمر/ذهبي عبر context.colors) والوضع الليلي.
+
 import 'dart:async';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../models/product_model.dart';
 import '../../providers/auth_provider.dart';
 import '../../providers/cart_provider.dart';
+import '../../services/home_feed_service.dart';
 import '../../services/notifications_service.dart';
 import '../../utils/app_colors.dart';
 import '../../utils/categories.dart';
+import 'cart_screen.dart';
 import 'product_detail_screen.dart';
 import 'search_screen.dart';
 import '../shared/notifications_screen.dart';
@@ -40,34 +56,55 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   String _selectedCategory = '';
+  HomeFeed? _feed;
+  bool _feedError = false;
+  int _refreshTick = 0;
+  final ScrollController _scroll = ScrollController();
+  final ValueNotifier<int> _loadMoreSignal = ValueNotifier(0);
 
-  Stream<QuerySnapshot> _getProducts({int? limit}) {
-    Query q = FirebaseFirestore.instance.collection('products');
-    if (_selectedCategory.isNotEmpty) {
-      q = q.where('category', isEqualTo: _selectedCategory);
-    }
-    q = q.orderBy('createdAt', descending: true);
-    if (limit != null) q = q.limit(limit);
-    return q.snapshots();
+  @override
+  void initState() {
+    super.initState();
+    _loadFeed();
+    _scroll.addListener(() {
+      if (_scroll.hasClients && _scroll.position.extentAfter < 700) {
+        _loadMoreSignal.value++;
+      }
+    });
   }
 
-  Stream<QuerySnapshot> _getTopRated() {
-    Query q = FirebaseFirestore.instance.collection('products');
-    if (_selectedCategory.isNotEmpty) {
-      q = q.where('category', isEqualTo: _selectedCategory);
-    }
-    return q.orderBy('rating', descending: true).limit(8).snapshots();
+  @override
+  void dispose() {
+    _scroll.dispose();
+    _loadMoreSignal.dispose();
+    super.dispose();
   }
 
-  /// "الأكثر مبيعاً" — لا يوجد حقل مبيعات فعلي في نموذج المنتج حالياً، لذا
-  /// نستخدم عدد التقييمات كمؤشر تقريبي معقول لشعبية المنتج (بدل حذف القسم
-  /// أو اختلاق بيانات). تحسين مستقبلي مقترح: إضافة حقل soldCount حقيقي.
-  Stream<QuerySnapshot> _getMostReviewed() {
-    Query q = FirebaseFirestore.instance.collection('products');
-    if (_selectedCategory.isNotEmpty) {
-      q = q.where('category', isEqualTo: _selectedCategory);
+  Future<void> _loadFeed({bool force = false}) async {
+    final cat = _selectedCategory;
+    if (mounted) setState(() { _feedError = false; });
+    try {
+      final feed = await HomeFeedService.load(cat, force: force);
+      if (!mounted || cat != _selectedCategory) return; // تغيّر التصنيف أثناء التحميل
+      setState(() { _feed = feed; });
+    } catch (_) {
+      if (!mounted || cat != _selectedCategory) return;
+      setState(() { _feedError = true; });
     }
-    return q.orderBy('reviewCount', descending: true).limit(8).snapshots();
+  }
+
+  void _selectCategory(String id) {
+    if (id == _selectedCategory) return;
+    setState(() { _selectedCategory = id; _feed = null; });
+    _loadFeed();
+    if (_scroll.hasClients) {
+      _scroll.animateTo(0, duration: const Duration(milliseconds: 350), curve: Curves.easeOutCubic);
+    }
+  }
+
+  Future<void> _refresh() async {
+    setState(() => _refreshTick++);
+    await _loadFeed(force: true);
   }
 
   void _openProduct(BuildContext context, ProductModel product) {
@@ -77,6 +114,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
+    final feed = _feed;
     return OnboardingOverlay(
       tutorialKey: 'home_screen',
       steps: const [
@@ -103,60 +141,91 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
       child: Scaffold(
         backgroundColor: colors.background,
-        body: CustomScrollView(slivers: [
-          SliverToBoxAdapter(child: _HomeHeader(
-            selectedCategory: _selectedCategory,
-            onCategoryChanged: (id) => setState(() => _selectedCategory = id),
-          )),
+        body: RefreshIndicator(
+          color: colors.primary,
+          edgeOffset: 80,
+          onRefresh: _refresh,
+          child: CustomScrollView(
+            controller: _scroll,
+            physics: const AlwaysScrollableScrollPhysics(),
+            // ignore: deprecated_member_use
+            cacheExtent: 800,
+            slivers: [
+              SliverToBoxAdapter(child: _HomeHeader(
+                selectedCategory: _selectedCategory,
+                onCategoryChanged: _selectCategory,
+              )),
 
-          SliverToBoxAdapter(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const SizedBox(height: 16),
-            const _PremiumBanner(),
+              SliverToBoxAdapter(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const SizedBox(height: 16),
+                const _PremiumBanner(),
 
-            // ── عروض اليوم (Flash Deals) — تظهر فقط إن وُجدت فعلاً ──────
-            const SizedBox(height: 22),
-            _FlashDealsSection(category: _selectedCategory, onTap: _openProduct),
+                if (_feedError && feed == null) ...[
+                  const SizedBox(height: 40),
+                  _ErrorRetry(onRetry: () => _loadFeed(force: true)),
+                ] else if (feed == null) ...[
+                  const SizedBox(height: 22),
+                  const _SectionHeader(title: 'الأحدث', emoji: '✨'),
+                  const SizedBox(height: 12),
+                  const _RowSkeleton(),
+                ] else ...[
+                  // ── عروض اليوم (تظهر فقط إن وُجدت) ──
+                  if (feed.deals.isNotEmpty) ...[
+                    const SizedBox(height: 22),
+                    _FlashDealsSection(deals: feed.deals, onTap: _openProduct),
+                  ],
 
-            // ── الأحدث ────────────────────────────────────────────────
-            const SizedBox(height: 22),
-            const _SectionHeader(title: 'الأحدث', emoji: '✨'),
-            const SizedBox(height: 12),
-            _ProductsRow(stream: _getProducts(limit: 10), onTap: _openProduct,
-                emptyText: 'لا توجد منتجات في هذا التصنيف'),
+                  // ── الأحدث ──
+                  const SizedBox(height: 22),
+                  const _SectionHeader(title: 'الأحدث', emoji: '✨'),
+                  const SizedBox(height: 12),
+                  _ProductsRow(products: feed.newest, onTap: _openProduct,
+                      emptyText: 'لا توجد منتجات في هذا التصنيف'),
 
-            // ── الأعلى تقييماً ────────────────────────────────────────
-            const SizedBox(height: 22),
-            const _SectionHeader(title: 'الأعلى تقييماً', emoji: '⭐'),
-            const SizedBox(height: 12),
-            _ProductsRow(stream: _getTopRated(), onTap: _openProduct,
-                filterHasRating: true),
+                  // ── الأعلى تقييماً ──
+                  if (feed.topRated.isNotEmpty) ...[
+                    const SizedBox(height: 22),
+                    const _SectionHeader(title: 'الأعلى تقييماً', emoji: '⭐'),
+                    const SizedBox(height: 12),
+                    _ProductsRow(products: feed.topRated, onTap: _openProduct),
+                  ],
 
-            // ── الأكثر مبيعاً ─────────────────────────────────────────
-            const SizedBox(height: 22),
-            const _SectionHeader(title: 'الأكثر مبيعاً', emoji: '🏆'),
-            const SizedBox(height: 12),
-            _ProductsRow(stream: _getMostReviewed(), onTap: _openProduct),
+                  // ── الأكثر مبيعاً (مؤشر: عدد التقييمات) ──
+                  if (feed.popular.isNotEmpty) ...[
+                    const SizedBox(height: 22),
+                    const _SectionHeader(title: 'الأكثر مبيعاً', emoji: '🏆'),
+                    const SizedBox(height: 12),
+                    _ProductsRow(products: feed.popular, onTap: _openProduct),
+                  ],
+                ],
 
-            // ── التصنيفات (نظرة سريعة) ────────────────────────────────
-            const SizedBox(height: 22),
-            const _SectionHeader(title: 'تصفّح حسب التصنيف', emoji: '🗂️'),
-            const SizedBox(height: 12),
-            const _CategoriesShowcase(),
+                // ── التصنيفات ──
+                const SizedBox(height: 22),
+                const _SectionHeader(title: 'تصفّح حسب التصنيف', emoji: '🗂️'),
+                const SizedBox(height: 12),
+                _CategoriesShowcase(onSelect: _selectCategory),
 
-            // ── لماذا سوجا؟ ────────────────────────────────────────────
-            const SizedBox(height: 22),
-            const _TrustBadgesRow(),
+                // ── لماذا سوجا؟ ──
+                const SizedBox(height: 22),
+                const _TrustBadgesRow(),
 
-            // ── جميع المنتجات (مُقسَّمة على صفحات الآن) ─────────────────
-            const SizedBox(height: 22),
-            const _SectionHeader(title: 'جميع المنتجات', emoji: '🛍️'),
-            const SizedBox(height: 12),
-          ])),
+                // ── جميع المنتجات ──
+                const SizedBox(height: 22),
+                const _SectionHeader(title: 'جميع المنتجات', emoji: '🛍️'),
+                const SizedBox(height: 12),
+              ])),
 
-          _PaginatedProductsGrid(category: _selectedCategory, onTap: _openProduct),
+              _PaginatedProductsGrid(
+                key: ValueKey('grid_${_selectedCategory}_$_refreshTick'),
+                category: _selectedCategory,
+                loadMoreSignal: _loadMoreSignal,
+                onTap: _openProduct,
+              ),
 
-          const SliverToBoxAdapter(child: SizedBox(height: 24)),
-        ]),
+              const SliverToBoxAdapter(child: SizedBox(height: 24)),
+            ],
+          ),
+        ),
       ),
     );
   }
@@ -209,11 +278,11 @@ class _HomeHeader extends StatelessWidget {
               onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const NotificationsScreen())),
             ),
             const SizedBox(width: 8),
-            // السلة (التنقّل الفعلي عبر تبويب "السلة" السفلي؛ هنا اختصار بصري فقط)
+            // السلة
             _HeaderIconButton(
               icon: Icons.shopping_cart_outlined,
               badgeCount: cartCount,
-              onTap: () {},
+              onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const CartScreen())),
             ),
           ]),
           const SizedBox(height: 14),
@@ -474,40 +543,88 @@ class _SectionHeader extends StatelessWidget {
 //  صف أفقي من بطاقات المنتجات (يُستخدم لعدة أقسام)
 // ═══════════════════════════════════════════════════════════════════════
 class _ProductsRow extends StatelessWidget {
-  final Stream<QuerySnapshot> stream;
+  final List<ProductModel> products;
   final void Function(BuildContext, ProductModel) onTap;
   final String? emptyText;
-  final bool filterHasRating;
-  const _ProductsRow({required this.stream, required this.onTap, this.emptyText, this.filterHasRating = false});
+  const _ProductsRow({required this.products, required this.onTap, this.emptyText});
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return StreamBuilder<QuerySnapshot>(
-      stream: stream,
-      builder: (ctx, snap) {
-        if (snap.connectionState == ConnectionState.waiting) {
-          return const Center(child: Padding(padding: EdgeInsets.all(24), child: CircularProgressIndicator()));
-        }
-        if (!snap.hasData || snap.data!.docs.isEmpty) {
-          if (emptyText == null) return const SizedBox();
-          return Center(child: Padding(padding: const EdgeInsets.all(24),
-              child: Text(emptyText!, style: TextStyle(color: colors.textSecondary))));
-        }
-        var products = snap.data!.docs.map((d) => ProductModel.fromMap(d.data() as Map<String, dynamic>, d.id)).toList();
-        if (filterHasRating) products = products.where((p) => p.rating > 0).toList();
-        if (products.isEmpty) return const SizedBox();
-        return SizedBox(
-          height: 232,
-          child: ListView.builder(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            itemCount: products.length,
-            itemBuilder: (_, i) => ProductCard(product: products[i], onTap: () => onTap(ctx, products[i])),
-          ),
-        );
-      },
+    if (products.isEmpty) {
+      if (emptyText == null) return const SizedBox();
+      return Center(child: Padding(padding: const EdgeInsets.all(24),
+          child: Text(emptyText!, style: TextStyle(color: colors.textSecondary))));
+    }
+    return RepaintBoundary(
+      child: SizedBox(
+        height: 232,
+        child: ListView.builder(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          itemCount: products.length,
+          itemBuilder: (_, i) => ProductCard(product: products[i], onTap: () => onTap(context, products[i])),
+        ),
+      ),
     );
+  }
+}
+
+// هيكل تحميل (نبض) لصف منتجات
+class _RowSkeleton extends StatefulWidget {
+  const _RowSkeleton();
+  @override
+  State<_RowSkeleton> createState() => _RowSkeletonState();
+}
+
+class _RowSkeletonState extends State<_RowSkeleton> with SingleTickerProviderStateMixin {
+  late final AnimationController _c =
+      AnimationController(vsync: this, duration: const Duration(milliseconds: 1100))..repeat(reverse: true);
+
+  @override
+  void dispose() { _c.dispose(); super.dispose(); }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return SizedBox(
+      height: 232,
+      child: AnimatedBuilder(
+        animation: _c,
+        builder: (_, __) => ListView.builder(
+          scrollDirection: Axis.horizontal,
+          physics: const NeverScrollableScrollPhysics(),
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          itemCount: 4,
+          itemBuilder: (_, __) => Container(
+            width: 158, margin: const EdgeInsets.only(left: 10),
+            decoration: BoxDecoration(
+              color: Color.lerp(colors.border.withValues(alpha: 0.35), colors.border.withValues(alpha: 0.75), _c.value),
+              borderRadius: BorderRadius.circular(16),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ErrorRetry extends StatelessWidget {
+  final VoidCallback onRetry;
+  const _ErrorRetry({required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = context.colors;
+    return Center(child: Column(children: [
+      Icon(Icons.wifi_off_rounded, size: 52, color: colors.textHint),
+      const SizedBox(height: 10),
+      Text('تعذّر تحميل المنتجات', style: TextStyle(color: colors.textPrimary, fontWeight: FontWeight.w700)),
+      const SizedBox(height: 4),
+      Text('تحقق من الاتصال ثم أعد المحاولة', style: TextStyle(color: colors.textSecondary, fontSize: 12.5)),
+      const SizedBox(height: 12),
+      OutlinedButton.icon(onPressed: onRetry, icon: const Icon(Icons.refresh_rounded), label: const Text('إعادة المحاولة')),
+    ]));
   }
 }
 
@@ -515,56 +632,30 @@ class _ProductsRow extends StatelessWidget {
 //  قسم عروض اليوم (Flash Deals) — يظهر فقط عند وجود صفقات فعلية
 // ═══════════════════════════════════════════════════════════════════════
 class _FlashDealsSection extends StatelessWidget {
-  final String category;
+  final List<ProductModel> deals;
   final void Function(BuildContext, ProductModel) onTap;
-  const _FlashDealsSection({required this.category, required this.onTap});
-
-  Stream<QuerySnapshot> _stream() {
-    Query q = FirebaseFirestore.instance.collection('products');
-    if (category.isNotEmpty) { q = q.where('category', isEqualTo: category); }
-    // نجلب أحدث 40 منتجاً فقط ثم نُصفّي العروض النشطة محلياً — يتجنّب هذا
-    // الحاجة لفهرس Firestore مركّب إضافي لحقلي originalPrice/dealEndsAt.
-    return q.orderBy('createdAt', descending: true).limit(40).snapshots();
-  }
+  const _FlashDealsSection({required this.deals, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
     final colors = context.colors;
-    return StreamBuilder<QuerySnapshot>(
-      stream: _stream(),
-      builder: (ctx, snap) {
-        if (!snap.hasData) return const SizedBox();
-        final all = snap.data!.docs.map((d) => ProductModel.fromMap(d.data() as Map<String, dynamic>, d.id)).toList();
-        final deals = all.where((p) => p.hasDiscount).take(10).toList();
-        if (deals.isEmpty) return const SizedBox(); // لا نعرض قسماً فارغاً بعدّاد وهمي
+    final withCountdown = deals.where((p) => p.dealEndsAt != null && p.dealEndsAt!.isAfter(DateTime.now())).toList();
+    final earliestEnd = withCountdown.isEmpty ? null : withCountdown
+        .map((p) => p.dealEndsAt!)
+        .reduce((a, b) => a.isBefore(b) ? a : b);
 
-        final withCountdown = deals.where((p) => p.dealEndsAt != null && p.dealEndsAt!.isAfter(DateTime.now())).toList();
-        final earliestEnd = withCountdown.isEmpty ? null : withCountdown
-            .map((p) => p.dealEndsAt!)
-            .reduce((a, b) => a.isBefore(b) ? a : b);
-
-        return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Row(children: [
-              Text('عروض اليوم 🔥', style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold, color: colors.textPrimary)),
-              const Spacer(),
-              if (earliestEnd != null) _CountdownChip(endsAt: earliestEnd),
-            ]),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            height: 232,
-            child: ListView.builder(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              itemCount: deals.length,
-              itemBuilder: (_, i) => ProductCard(product: deals[i], onTap: () => onTap(ctx, deals[i])),
-            ),
-          ),
-        ]);
-      },
-    );
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Row(children: [
+          Text('عروض اليوم 🔥', style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.bold, color: colors.textPrimary)),
+          const Spacer(),
+          if (earliestEnd != null) _CountdownChip(endsAt: earliestEnd),
+        ]),
+      ),
+      const SizedBox(height: 12),
+      _ProductsRow(products: deals, onTap: onTap),
+    ]);
   }
 }
 
@@ -617,7 +708,8 @@ class _CountdownChipState extends State<_CountdownChip> {
 //  عرض سريع للتصنيفات (شبكة أيقونات + عدد المنتجات)
 // ═══════════════════════════════════════════════════════════════════════
 class _CategoriesShowcase extends StatelessWidget {
-  const _CategoriesShowcase();
+  final ValueChanged<String> onSelect;
+  const _CategoriesShowcase({required this.onSelect});
 
   @override
   Widget build(BuildContext context) {
@@ -630,7 +722,7 @@ class _CategoriesShowcase extends StatelessWidget {
         physics: const NeverScrollableScrollPhysics(),
         crossAxisSpacing: 10, mainAxisSpacing: 12, childAspectRatio: 0.85,
         children: kSougaCategories.map((c) => GestureDetector(
-          onTap: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const SearchScreen())),
+          onTap: () => onSelect(c.id),
           child: Column(children: [
             Container(
               width: 52, height: 52,
@@ -685,8 +777,10 @@ class _TrustBadgesRow extends StatelessWidget {
 // ═══════════════════════════════════════════════════════════════════════
 class _PaginatedProductsGrid extends StatefulWidget {
   final String category;
+  final ValueListenable<int> loadMoreSignal;
   final void Function(BuildContext, ProductModel) onTap;
-  const _PaginatedProductsGrid({required this.category, required this.onTap});
+  const _PaginatedProductsGrid({
+    super.key, required this.category, required this.loadMoreSignal, required this.onTap});
 
   @override
   State<_PaginatedProductsGrid> createState() => _PaginatedProductsGridState();
@@ -698,25 +792,29 @@ class _PaginatedProductsGridState extends State<_PaginatedProductsGrid> {
   DocumentSnapshot? _lastDoc;
   bool _loading = false;
   bool _hasMore = true;
-  String? _loadedCategory;
+
+  bool _error = false;
+  bool _first = true; // قبل انتهاء أول تحميل: مؤشر بدل «لا توجد منتجات»
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    if (_loadedCategory != widget.category) {
-      _loadedCategory = widget.category;
-      _resetAndLoad();
-    }
+  void initState() {
+    super.initState();
+    widget.loadMoreSignal.addListener(_onSignal);
+    WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted) _loadMore(); });
   }
 
-  Future<void> _resetAndLoad() async {
-    setState(() { _products.clear(); _lastDoc = null; _hasMore = true; });
-    await _loadMore();
+  @override
+  void dispose() {
+    widget.loadMoreSignal.removeListener(_onSignal);
+    super.dispose();
   }
+
+  // التمرير قرب النهاية → حمّل الصفحة التالية تلقائياً (لا تُعاد المحاولة تلقائياً بعد خطأ)
+  void _onSignal() { if (!_error) _loadMore(); }
 
   Future<void> _loadMore() async {
     if (_loading || !_hasMore) return;
-    setState(() => _loading = true);
+    setState(() { _loading = true; _error = false; });
     try {
       Query q = FirebaseFirestore.instance.collection('products');
       if (widget.category.isNotEmpty) { q = q.where('category', isEqualTo: widget.category); }
@@ -727,9 +825,9 @@ class _PaginatedProductsGridState extends State<_PaginatedProductsGrid> {
       _hasMore = snap.docs.length == _pageSize;
       _products.addAll(snap.docs.map((d) => ProductModel.fromMap(d.data() as Map<String, dynamic>, d.id)));
     } catch (_) {
-      _hasMore = false;
+      _error = true;
     }
-    if (mounted) setState(() => _loading = false);
+    if (mounted) setState(() { _loading = false; _first = false; });
   }
 
   @override
@@ -737,11 +835,13 @@ class _PaginatedProductsGridState extends State<_PaginatedProductsGrid> {
     final colors = context.colors;
 
     if (_products.isEmpty) {
-      if (_loading) {
+      if (_loading || _first) {
         return const SliverToBoxAdapter(child: Padding(padding: EdgeInsets.all(24), child: Center(child: CircularProgressIndicator())));
       }
       return SliverToBoxAdapter(child: Padding(padding: const EdgeInsets.all(24),
-          child: Center(child: Text('لا توجد منتجات', style: TextStyle(color: colors.textSecondary)))));
+          child: Center(child: _error
+              ? _ErrorRetry(onRetry: _loadMore)
+              : Text('لا توجد منتجات', style: TextStyle(color: colors.textSecondary)))));
     }
 
     return SliverPadding(

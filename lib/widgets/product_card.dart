@@ -17,6 +17,7 @@ import '../providers/favorites_provider.dart';
 import '../services/imagekit_service.dart';
 import '../utils/app_colors.dart';
 import 'product/product_gallery_view.dart' show ProductImageFrame;
+import '../utils/currencies.dart';
 
 class ProductCard extends StatelessWidget {
   final ProductModel product;
@@ -67,12 +68,12 @@ class ProductCard extends StatelessWidget {
                           color: colors.textPrimary, height: 1.25)),
                   const SizedBox(height: 6),
                   Row(crossAxisAlignment: CrossAxisAlignment.end, children: [
-                    Text('${product.price.toStringAsFixed(0)} ${product.currencySymbol}',
+                    Text('${formatMoney(product.price)} ${product.currencySymbol}',
                         style: TextStyle(fontSize: isGrid ? 15 : 14,
                             fontWeight: FontWeight.bold, color: colors.primary)),
                     if (product.hasDiscount) ...[
                       const SizedBox(width: 6),
-                      Text(product.originalPrice!.toStringAsFixed(0),
+                      Text(formatMoney(product.originalPrice!),
                           style: TextStyle(fontSize: 11, color: colors.textHint,
                               decoration: TextDecoration.lineThrough)),
                     ],

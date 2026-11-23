@@ -342,6 +342,7 @@ class _ChatScreenState extends State<ChatScreen> {
         if (!didPop && _selecting) setState(_selected.clear);
       },
       child: Scaffold(
+        resizeToAvoidBottomInset: true,
         appBar: _appBar(myUid),
         body: Column(children: [
           // قائمة الرسائل
@@ -438,8 +439,11 @@ class _ChatScreenState extends State<ChatScreen> {
             ),
           ),
 
-          // مربع الإدخال
-          Container(
+          // مربع الإدخال — ثابت أسفل الشاشة (مثل واتساب): الـScaffold يرفع الجسم فوق
+          // لوحة المفاتيح تلقائياً، فلا نضيف viewInsets يدوياً (كان يضاعف الارتفاع ويدفع الحقل للأعلى).
+          SafeArea(
+            top: false,
+            child: Container(
             decoration: BoxDecoration(
               color:   colors.surface,
               boxShadow: [
@@ -450,12 +454,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ],
             ),
-            padding: EdgeInsets.only(
-              left:   8,
-              right:  8,
-              top:    8,
-              bottom: MediaQuery.of(context).viewInsets.bottom + 8,
-            ),
+            padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
             child: Row(children: [
               Expanded(
                 child: TextField(
@@ -495,6 +494,7 @@ class _ChatScreenState extends State<ChatScreen> {
                 ),
               ),
             ]),
+          ),
           ),
         ]),
       ),

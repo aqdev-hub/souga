@@ -47,16 +47,19 @@ class _AdminMainScreenState extends State<AdminMainScreen> {
         onDestinationSelected: (i) => setState(() => _selectedIndex = i),
         backgroundColor:      colors.surface,
         indicatorColor:       colors.primaryDark.withValues(alpha: 0.15),
+        // 6 وجهات على شاشة ضيقة: نص أصغر وسطر واحد بدل انكسار الكلمات
+        labelTextStyle: WidgetStateProperty.all(
+            const TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
         destinations: [
           NavigationDestination(
             icon:         const Icon(Icons.dashboard_outlined),
             selectedIcon: Icon(Icons.dashboard, color: colors.primaryDark),
-            label:        'لوحة التحكم',
+            label:        'الرئيسية',
           ),
           NavigationDestination(
             icon:         const Icon(Icons.people_outlined),
             selectedIcon: Icon(Icons.people, color: colors.primaryDark),
-            label:        'المستخدمون',
+            label:        'الأعضاء',
           ),
           NavigationDestination(
             icon:         const Icon(Icons.inventory_2_outlined),

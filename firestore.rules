@@ -48,7 +48,10 @@ service cloud.firestore {
     function notChangingRoleFields() {
       // يمنع المستخدم العادي من تعديل role/isActive في مستنده الخاص
       return !('role' in request.resource.data.diff(resource.data).affectedKeys())
-          && !('isActive' in request.resource.data.diff(resource.data).affectedKeys());
+          && !('isActive' in request.resource.data.diff(resource.data).affectedKeys())
+          && !('needsEmailVerification' in request.resource.data.diff(resource.data).affectedKeys())
+          && !('ordersPaused' in request.resource.data.diff(resource.data).affectedKeys())
+          && !('sellerTimeouts' in request.resource.data.diff(resource.data).affectedKeys());
     }
 
     // ── users/{uid} ──────────────────────────────────────────────────────
@@ -59,6 +62,17 @@ service cloud.firestore {
       // لكن ممنوع عليه تغيير role أو isActive بنفسه — فقط الأدمن يقدر.
       allow update: if (isOwner(uid) && notChangingRoleFields()) || isAdmin();
       allow delete: if isAdmin();
+
+      // ✅ مفضلات الخصائص والألوان: خاصة بصاحبها فقط (لا يقرؤها غيره حتى البائعون الآخرون).
+      match /attributeFavorites/{favId} {
+        allow read, create, update, delete: if isOwner(uid)
+          && (request.method == 'delete'
+              || (request.resource.data.keys().hasOnly(['rootCategoryId','type','name','kind','values','unitId','updatedAt'])
+                  && request.resource.data.name is string
+                  && request.resource.data.name.size() <= 80
+                  && request.resource.data.values is list
+                  && request.resource.data.values.size() <= 100));
+      }
     }
 
     // ── products/{id} ───────────────────────────────────────────────────
@@ -106,27 +120,80 @@ service cloud.firestore {
     }
 
     // ── orders/{id} ──────────────────────────────────────────────────────
+    // ✅ دورة الشراء الكاملة: الطلبات تُنشأ وتُحدَّث من السيرفر فقط (Admin SDK
+    // يتجاوز القواعد). العميل يقرأ طلباته فقط — لا create ولا update:
+    //   • الأسعار والمخزون تُحسب من قاعدة البيانات لا من العميل.
+    //   • الانتقالات (قبول/شحن/تسليم/إلغاء) تمر بآلة حالات في السيرفر.
+    //   • لا يستطيع البائع تعديل المبلغ أو الدفع أو الحالة مباشرة.
+    // ⚠️ نسخ التطبيق القديمة (التي تكتب الطلب مباشرة) ستفشل بعد نشر هذه القواعد
+    //   ⇒ انشر التطبيق الجديد وفعّل التحديث الإجباري (minBuildNumber) أولاً.
     match /orders/{orderId} {
       allow read: if isSignedIn() && (
                      resource.data.customerId == request.auth.uid ||
                      resource.data.sellerId   == request.auth.uid ||
                      isAdmin());
-      allow create: if isSignedIn()
-                    && request.resource.data.customerId == request.auth.uid;
-      // العميل يستطيع فقط "إلغاء" طلبه، والبائع/الأدمن يستطيعون تحديث الحالة
-      allow update: if isSignedIn() && (
-                       resource.data.sellerId == request.auth.uid ||
-                       isAdmin() ||
-                       (resource.data.customerId == request.auth.uid &&
-                        request.resource.data.status == 'cancelled'));
+      allow create, update: if false;
       allow delete: if isAdmin();
     }
 
+    // رمز التسليم: يقرؤه المشتري وحده (البائع والآخرون لا يرونه إطلاقاً)
+    match /order_secrets/{orderId} {
+      allow read: if isSignedIn() && resource.data.customerId == request.auth.uid;
+      allow write: if false;
+    }
+
+    // مجموعات الطلبات (طلب واحد ← عدة طلبات فرعية)
+    match /order_groups/{groupId} {
+      allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
+    // دفعات حاسب: المشتري والمشرف فقط (لا يراها البائع)
+    match /payments/{paymentId} {
+      allow read: if isSignedIn() && (resource.data.customerId == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+
+    // النزاعات: المشتري والبائع المعنيان والمشرف
+    match /disputes/{orderId} {
+      allow read: if isSignedIn() && (
+                     resource.data.customerId == request.auth.uid ||
+                     resource.data.sellerId   == request.auth.uid ||
+                     isAdmin());
+      allow write: if false;
+    }
+
+    // دفتر القيود ورصيد البائع: قراءة فقط لصاحبها أو للمشرف
+    match /ledger/{entryId} {
+      allow read: if isSignedIn() && (resource.data.sellerId == request.auth.uid || isAdmin());
+      allow write: if false;
+    }
+    match /seller_balances/{sellerId} {
+      allow read: if isSignedIn() && (request.auth.uid == sellerId || isAdmin());
+      allow write: if false;
+    }
+
     // ── reviews/{id} ─────────────────────────────────────────────────────
+    // بوابة التقييم: تُفعَّل من app_config/orders.requireVerifiedReviews = true
+    // (افتراضياً مغلقة). عند تفعيلها لا يقيّم إلا من اكتمل له طلب فيه المنتج
+    // (السيرفر يكتب review_permits/{uid}__{productId} عند الاكتمال).
+    function reviewGateOn() {
+      return exists(/databases/$(database)/documents/app_config/orders)
+          && get(/databases/$(database)/documents/app_config/orders).data.get('requireVerifiedReviews', false) == true;
+    }
+    function mayReview(pid) {
+      return isAdmin() || !reviewGateOn()
+          || exists(/databases/$(database)/documents/review_permits/$(request.auth.uid + '__' + pid));
+    }
+    match /review_permits/{id} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
     match /reviews/{reviewId} {
       allow read: if true;
       allow create: if isSignedIn()
-                    && request.resource.data.userId == request.auth.uid;
+                    && request.resource.data.userId == request.auth.uid
+                    && mayReview(request.resource.data.productId);
       allow update, delete: if isSignedIn()
                     && (resource.data.userId == request.auth.uid || isAdmin());
     }
@@ -178,6 +245,11 @@ service cloud.firestore {
     match /app_config/{doc} {
       allow read: if true;
       allow write: if isAdmin();
+    }
+
+    // ── email_otps — رموز التحقق: السيرفر فقط (Admin SDK يتجاوز القواعد) ──
+    match /email_otps/{id} {
+      allow read, write: if false;
     }
 
     // ── أي مجموعة أخرى غير مُعرَّفة صراحة: مرفوضة افتراضياً (Deny by default) ──
